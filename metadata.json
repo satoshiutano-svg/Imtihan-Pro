@@ -1,0 +1,6 @@
+{
+  "name": "Roshan Study",
+  "description": "Free, offline-first educational platform for Grades 9-12 students across KPK BISE boards (Flutter + Cloudflare architecture).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

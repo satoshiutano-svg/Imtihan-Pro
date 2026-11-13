@@ -1,0 +1,27 @@
+name = "roshan-study-api"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "roshan-study-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "CONTENT_BUCKET"
+bucket_name = "roshan-study-packs"
+
+[[kv_namespaces]]
+binding = "CATALOG_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[vars]
+ENVIRONMENT = "production"
+RATE_LIMIT_MAX_REQUESTS = "120"
+RATE_LIMIT_WINDOW_SEC = "60"
+
+# Configure sensitive secrets via `wrangler secret put`:
+# - ADMIN_API_TOKEN
+# - TELEGRAM_BOT_TOKEN
+# - TELEGRAM_ARCHIVE_CHANNEL_ID
