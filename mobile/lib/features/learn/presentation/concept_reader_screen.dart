@@ -9,6 +9,10 @@ import 'package:roshan_study/app/theme/app_typography.dart';
 import 'package:roshan_study/app/theme/display_preferences_controller.dart';
 import 'package:roshan_study/core/models/curriculum_models.dart';
 import 'package:roshan_study/core/widgets/academic_surface.dart';
+import 'package:roshan_study/core/widgets/math_graph_view.dart';
+import 'package:roshan_study/core/widgets/math_text.dart';
+import 'package:roshan_study/core/widgets/motion_graphic_player.dart';
+import 'package:roshan_study/core/widgets/motion_system.dart';
 import 'package:roshan_study/core/widgets/rtl_aware_text.dart';
 import 'package:roshan_study/data/repositories/content_repository.dart';
 
@@ -85,6 +89,7 @@ class _ConceptReaderScreenState extends ConsumerState<ConceptReaderScreen> {
     final isDark = theme.brightness == Brightness.dark;
     final repo = ref.watch(contentRepositoryProvider);
     final concept = repo.getConceptById(widget.conceptId);
+    final pack = repo.getPackById(widget.chapterId);
     final prefs = ref.watch(displayPreferencesProvider);
 
     if (concept == null) {
@@ -165,12 +170,72 @@ class _ConceptReaderScreenState extends ConsumerState<ConceptReaderScreen> {
             StudyMetadataLine(
               parts: [concept.sourceBook, concept.sourcePage],
             ),
+            if (concept.orderIndex == 1 &&
+                pack != null &&
+                ((pack.chapterIntro ?? '').trim().isNotEmpty ||
+                    pack.prerequisites.isNotEmpty)) ...[
+              const SizedBox(height: AppSpacing.md),
+              AcademicSurface(
+                backgroundColor: theme.colorScheme.surfaceContainerHighest
+                    .withValues(alpha: 0.45),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if ((pack.chapterIntro ?? '').trim().isNotEmpty) ...[
+                      Text('Chapter Overview', style: theme.textTheme.titleSmall),
+                      const SizedBox(height: AppSpacing.xxs),
+                      Text(pack.chapterIntro!, style: theme.textTheme.bodyMedium),
+                    ],
+                    if (pack.prerequisites.isNotEmpty) ...[
+                      if ((pack.chapterIntro ?? '').trim().isNotEmpty)
+                        const SizedBox(height: AppSpacing.xs),
+                      Text('Prerequisites', style: theme.textTheme.labelMedium),
+                      const SizedBox(height: AppSpacing.xxs),
+                      StudyMetadataLine(parts: pack.prerequisites),
+                    ],
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: AppSpacing.md),
-            RtlAwareText(
-              concept.simpleExplanation,
-              explicitDirection: concept.textDirection,
-              style: theme.textTheme.bodyLarge,
-            ),
+            if (concept.simpleExplanation.contains(r'$'))
+              MathText(
+                concept.simpleExplanation,
+                style: theme.textTheme.bodyLarge,
+                textDirection: concept.textDirection,
+              )
+            else
+              RtlAwareText(
+                concept.simpleExplanation,
+                explicitDirection: concept.textDirection,
+                style: theme.textTheme.bodyLarge,
+              ),
+
+            if (concept.motionGraphics.isNotEmpty) ...[
+              const StudyDivider(verticalPadding: AppSpacing.xl),
+              const StudySectionHeader(
+                title: 'Interactive Concept Animation',
+                subtitle: 'Play, scrub, or jump between physics and science stages offline',
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              for (final mg in concept.motionGraphics) ...[
+                MotionGraphicPlayer(spec: mg),
+                const SizedBox(height: AppSpacing.sm),
+              ],
+            ],
+
+            if (concept.graphs.isNotEmpty) ...[
+              const StudyDivider(verticalPadding: AppSpacing.xl),
+              const StudySectionHeader(
+                title: 'Interactive Graph & Trace',
+                subtitle: 'Drag the trace slider to inspect values at any coordinate',
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              for (final gr in concept.graphs) ...[
+                MathGraphView(spec: gr),
+                const SizedBox(height: AppSpacing.sm),
+              ],
+            ],
 
             if (concept.glossaryHints.isNotEmpty) ...[
               const StudyDivider(verticalPadding: AppSpacing.xl),
@@ -206,30 +271,38 @@ class _ConceptReaderScreenState extends ConsumerState<ConceptReaderScreen> {
                   },
                 ),
               ),
-              if (_expandedGlossaryIndex != null) ...[
-                const SizedBox(height: AppSpacing.sm),
-                AcademicSurface(
-                  backgroundColor: theme.colorScheme.surfaceContainerHighest
-                      .withValues(alpha: 0.55),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      RtlAwareText(
-                        concept
-                            .glossaryHints[_expandedGlossaryIndex!].urduMeaning,
-                        explicitDirection: TextDirection.rtl,
-                        style: theme.textTheme.titleMedium,
+              MotionExpandable(
+                expanded: _expandedGlossaryIndex != null,
+                child: _expandedGlossaryIndex == null
+                    ? const SizedBox.shrink()
+                    : Padding(
+                        padding: const EdgeInsets.only(top: AppSpacing.sm),
+                        child: AcademicSurface(
+                          backgroundColor: theme
+                              .colorScheme.surfaceContainerHighest
+                              .withValues(alpha: 0.55),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              RtlAwareText(
+                                concept
+                                    .glossaryHints[_expandedGlossaryIndex!]
+                                    .urduMeaning,
+                                explicitDirection: TextDirection.rtl,
+                                style: theme.textTheme.titleMedium,
+                              ),
+                              const SizedBox(height: AppSpacing.xxs),
+                              Text(
+                                concept
+                                    .glossaryHints[_expandedGlossaryIndex!]
+                                    .simpleHint,
+                                style: theme.textTheme.bodyMedium,
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
-                      const SizedBox(height: AppSpacing.xxs),
-                      Text(
-                        concept
-                            .glossaryHints[_expandedGlossaryIndex!].simpleHint,
-                        style: theme.textTheme.bodyMedium,
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+              ),
             ],
 
             if (concept.definitions.isNotEmpty) ...[
@@ -280,12 +353,12 @@ class _ConceptReaderScreenState extends ConsumerState<ConceptReaderScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
+                        MathText(
                           f.expression,
                           style: AppTypography.formula(context),
                         ),
                         const SizedBox(height: AppSpacing.xxs),
-                        Text(
+                        MathText(
                           f.unit == null
                               ? f.description
                               : '${f.description} • SI Unit: ${f.unit}',
@@ -317,7 +390,7 @@ class _ConceptReaderScreenState extends ConsumerState<ConceptReaderScreen> {
                           ),
                         ),
                       const SizedBox(height: AppSpacing.xs),
-                      Text(diag.caption, style: theme.textTheme.bodySmall),
+                      MathText(diag.caption, style: theme.textTheme.bodySmall),
                     ],
                   ),
                 ),
@@ -333,15 +406,15 @@ class _ConceptReaderScreenState extends ConsumerState<ConceptReaderScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(ex.prompt, style: theme.textTheme.titleMedium),
+                      MathText(ex.prompt, style: theme.textTheme.titleMedium),
                       const SizedBox(height: AppSpacing.xs),
                       for (final s in ex.steps)
                         Padding(
                           padding: const EdgeInsets.only(bottom: AppSpacing.xxs),
-                          child: Text(s, style: theme.textTheme.bodyMedium),
+                          child: MathText(s, style: theme.textTheme.bodyMedium),
                         ),
                       const SizedBox(height: AppSpacing.xxs),
-                      Text(
+                      MathText(
                         'Answer: ${ex.finalAnswer}',
                         style: AppTypography.tabular(
                           theme.textTheme.labelLarge,
@@ -543,12 +616,20 @@ class _ConceptReaderScreenState extends ConsumerState<ConceptReaderScreen> {
           ],
         ),
         const SizedBox(height: AppSpacing.xs),
-        LinearProgressIndicator(value: (_microStep + 1) / cards.length),
+        AnimatedProgressTrack(value: (_microStep + 1) / cards.length),
         const SizedBox(height: AppSpacing.lg),
-        Text(card.body, style: theme.textTheme.bodyLarge),
+        MathText(card.body, style: theme.textTheme.bodyLarge),
+        if (_microStep == 0 && concept.motionGraphics.isNotEmpty) ...[
+          const SizedBox(height: AppSpacing.md),
+          MotionGraphicPlayer(spec: concept.motionGraphics.first),
+        ],
+        if (_microStep == cards.length - 1 && concept.graphs.isNotEmpty) ...[
+          const SizedBox(height: AppSpacing.md),
+          MathGraphView(spec: concept.graphs.first),
+        ],
         if (card.quickCheckQuestion != null) ...[
           const StudyDivider(verticalPadding: AppSpacing.lg),
-          Text(card.quickCheckQuestion!, style: theme.textTheme.titleMedium),
+          MathText(card.quickCheckQuestion!, style: theme.textTheme.titleMedium),
           const SizedBox(height: AppSpacing.sm),
           for (final opt in card.quickCheckOptions)
             Padding(

@@ -6,6 +6,8 @@ import 'package:roshan_study/app/theme/app_typography.dart';
 import 'package:roshan_study/core/models/curriculum_models.dart';
 import 'package:roshan_study/core/utils/answer_matcher.dart';
 import 'package:roshan_study/core/widgets/academic_surface.dart';
+import 'package:roshan_study/core/widgets/math_text.dart';
+import 'package:roshan_study/core/widgets/motion_system.dart';
 import 'package:roshan_study/core/widgets/share_study_card_sheet.dart';
 import 'package:roshan_study/data/repositories/content_repository.dart';
 import 'package:roshan_study/data/repositories/progress_repository.dart';
@@ -37,6 +39,8 @@ class _PracticeSessionScreenState extends ConsumerState<PracticeSessionScreen> {
   bool _submitted = false;
   bool _isCorrect = false;
   String? _selectedOption;
+  final Set<String> _selectedMultiOptions = <String>{};
+  final Map<String, String> _selectedMatches = <String, String>{};
   final TextEditingController _textController = TextEditingController();
   late Set<int> _checkedMarkingPoints;
   late DateTime _questionStartedAt;
@@ -67,9 +71,38 @@ class _PracticeSessionScreenState extends ConsumerState<PracticeSessionScreen> {
       _index < _queue.length ? _queue[_index] : null;
 
   void _submitObjectiveOrNumerical(QuestionItem q) {
-    final userRaw = q.options.isNotEmpty
-        ? (_selectedOption ?? '').trim()
-        : _textController.text.trim();
+    String userRaw;
+    String expectedRaw = q.correctAnswer;
+
+    if (q.type == QuestionType.multiSelect) {
+      if (_selectedMultiOptions.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please select one or more answers.')),
+        );
+        return;
+      }
+      userRaw = _selectedMultiOptions.join('||');
+      if (q.multiSelectAnswers.isNotEmpty) {
+        expectedRaw = q.multiSelectAnswers.join('||');
+      }
+    } else if (q.type == QuestionType.matching && q.matchingPairs.isNotEmpty) {
+      if (_selectedMatches.length < q.matchingPairs.length) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please match every left item before submitting.')),
+        );
+        return;
+      }
+      userRaw = q.matchingPairs
+          .map((p) => '${p.left}->${_selectedMatches[p.left] ?? ''}')
+          .join('||');
+      expectedRaw = q.matchingPairs
+          .map((p) => '${p.left}->${p.right}')
+          .join('||');
+    } else if (q.type == QuestionType.trueFalse || q.options.isNotEmpty) {
+      userRaw = (_selectedOption ?? '').trim();
+    } else {
+      userRaw = _textController.text.trim();
+    }
 
     if (userRaw.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -80,7 +113,7 @@ class _PracticeSessionScreenState extends ConsumerState<PracticeSessionScreen> {
 
     final correct = AnswerMatcher.isMatch(
       userRaw: userRaw,
-      expectedRaw: q.correctAnswer,
+      expectedRaw: expectedRaw,
       type: q.type,
     );
 
@@ -149,6 +182,8 @@ class _PracticeSessionScreenState extends ConsumerState<PracticeSessionScreen> {
       _submitted = false;
       _isCorrect = false;
       _selectedOption = null;
+      _selectedMultiOptions.clear();
+      _selectedMatches.clear();
       _textController.clear();
       _checkedMarkingPoints.clear();
       _questionStartedAt = DateTime.now();
@@ -185,11 +220,13 @@ class _PracticeSessionScreenState extends ConsumerState<PracticeSessionScreen> {
         appBar: AppBar(title: const Text('Practice Complete')),
         body: StudyPageContainer(
           children: [
-            StudyFeedbackBanner(
-              kind: StudyFeedbackKind.success,
-              title: 'Session Finished — $_correctCount/${_queue.length} ($pct%)',
-              message:
-                  'All attempts were saved locally to your progress and spaced-revision schedule.',
+            MotionEntrance(
+              child: StudyFeedbackBanner(
+                kind: StudyFeedbackKind.success,
+                title: 'Session Finished — $_correctCount/${_queue.length} ($pct%)',
+                message:
+                    'All attempts were saved locally to your progress and spaced-revision schedule.',
+              ),
             ),
             const SizedBox(height: AppSpacing.lg),
             Wrap(
@@ -226,6 +263,9 @@ class _PracticeSessionScreenState extends ConsumerState<PracticeSessionScreen> {
     final misconception = _selectedOption != null
         ? q.optionMisconceptions[_selectedOption!]
         : null;
+    final choiceOptions = q.type == QuestionType.trueFalse && q.options.isEmpty
+        ? const ['True', 'False']
+        : q.options;
 
     return Scaffold(
       appBar: AppBar(
@@ -233,7 +273,7 @@ class _PracticeSessionScreenState extends ConsumerState<PracticeSessionScreen> {
       ),
       body: StudyPageContainer(
         children: [
-          LinearProgressIndicator(value: (_index + 1) / _queue.length),
+          AnimatedProgressTrack(value: (_index + 1) / _queue.length),
           const SizedBox(height: AppSpacing.md),
 
           // Quiet unboxed metadata line replacing Chip clutter
@@ -246,34 +286,37 @@ class _PracticeSessionScreenState extends ConsumerState<PracticeSessionScreen> {
             ],
           ),
           const SizedBox(height: AppSpacing.xs),
-          Text(q.statement, style: theme.textTheme.titleLarge),
+          MathText(q.statement, style: theme.textTheme.titleLarge),
           const SizedBox(height: AppSpacing.md),
 
           // Progressive hints (before submission)
           if (!_submitted && q.hints.isNotEmpty) ...[
-            if (_hintsRevealed > 0) ...[
-              AcademicSurface(
-                backgroundColor: theme.colorScheme.surfaceContainerHighest
-                    .withValues(alpha: 0.55),
-                padding: const EdgeInsets.all(AppSpacing.sm),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    for (int i = 0; i < _hintsRevealed; i++)
-                      Padding(
-                        padding: EdgeInsets.only(
-                          bottom: i + 1 < _hintsRevealed ? AppSpacing.xxs : 0,
+            MotionExpandable(
+              expanded: _hintsRevealed > 0,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+                child: AcademicSurface(
+                  backgroundColor: theme.colorScheme.surfaceContainerHighest
+                      .withValues(alpha: 0.55),
+                  padding: const EdgeInsets.all(AppSpacing.sm),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (int i = 0; i < _hintsRevealed; i++)
+                        Padding(
+                          padding: EdgeInsets.only(
+                            bottom: i + 1 < _hintsRevealed ? AppSpacing.xxs : 0,
+                          ),
+                          child: MathText(
+                            'Hint ${i + 1}: ${q.hints[i]}',
+                            style: theme.textTheme.bodyMedium,
+                          ),
                         ),
-                        child: Text(
-                          'Hint ${i + 1}: ${q.hints[i]}',
-                          style: theme.textTheme.bodyMedium,
-                        ),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
-              const SizedBox(height: AppSpacing.xs),
-            ],
+            ),
             if (_hintsRevealed < q.hints.length)
               Align(
                 alignment: Alignment.centerLeft,
@@ -289,8 +332,122 @@ class _PracticeSessionScreenState extends ConsumerState<PracticeSessionScreen> {
           ],
 
           // Input UI per Question Type
-          if (q.options.isNotEmpty)
-            for (final opt in q.options)
+          if (q.type == QuestionType.multiSelect && choiceOptions.isNotEmpty) ...[
+            Text(
+              'Select all correct options',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            for (final opt in choiceOptions)
+              Padding(
+                padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+                child: AcademicSurface(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.sm,
+                    vertical: AppSpacing.xs,
+                  ),
+                  backgroundColor: _selectedMultiOptions.contains(opt)
+                      ? theme.colorScheme.primaryContainer
+                          .withValues(alpha: 0.4)
+                      : null,
+                  borderColor: _selectedMultiOptions.contains(opt)
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.outline,
+                  onTap: _submitted
+                      ? null
+                      : () => setState(() {
+                            if (_selectedMultiOptions.contains(opt)) {
+                              _selectedMultiOptions.remove(opt);
+                            } else {
+                              _selectedMultiOptions.add(opt);
+                            }
+                          }),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(
+                      minHeight: AppTouchTarget.min - 16,
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _selectedMultiOptions.contains(opt)
+                              ? Icons.check_box
+                              : Icons.check_box_outline_blank,
+                          size: AppIconSize.md,
+                          color: _selectedMultiOptions.contains(opt)
+                              ? theme.colorScheme.primary
+                              : theme.colorScheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: AppSpacing.sm),
+                        Expanded(
+                          child: MathText(opt, style: theme.textTheme.bodyLarge),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+          ] else if (q.type == QuestionType.matching &&
+              q.matchingPairs.isNotEmpty) ...[
+            Text(
+              'Match each item on the left with its correct partner',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            Builder(
+              builder: (context) {
+                final rightChoices = q.matchingPairs
+                    .map((p) => p.right)
+                    .toSet()
+                    .toList()
+                  ..sort();
+                return Column(
+                  children: [
+                    for (final pair in q.matchingPairs)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                        child: AcademicSurface(
+                          padding: const EdgeInsets.all(AppSpacing.sm),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              MathText(
+                                pair.left,
+                                style: theme.textTheme.titleSmall,
+                              ),
+                              const SizedBox(height: AppSpacing.xs),
+                              DropdownButtonFormField<String>(
+                                initialValue: _selectedMatches[pair.left],
+                                isExpanded: true,
+                                hint: const Text('Select matching answer'),
+                                items: rightChoices
+                                    .map(
+                                      (r) => DropdownMenuItem<String>(
+                                        value: r,
+                                        child: Text(r),
+                                      ),
+                                    )
+                                    .toList(growable: false),
+                                onChanged: _submitted
+                                    ? null
+                                    : (val) {
+                                        if (val != null) {
+                                          setState(
+                                            () => _selectedMatches[pair.left] =
+                                                val,
+                                          );
+                                        }
+                                      },
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ] else if (choiceOptions.isNotEmpty)
+            for (final opt in choiceOptions)
               Padding(
                 padding: const EdgeInsets.only(bottom: AppSpacing.xs),
                 child: AcademicSurface(
@@ -325,7 +482,7 @@ class _PracticeSessionScreenState extends ConsumerState<PracticeSessionScreen> {
                         ),
                         const SizedBox(width: AppSpacing.sm),
                         Expanded(
-                          child: Text(opt, style: theme.textTheme.bodyLarge),
+                          child: MathText(opt, style: theme.textTheme.bodyLarge),
                         ),
                       ],
                     ),
@@ -408,24 +565,31 @@ class _PracticeSessionScreenState extends ConsumerState<PracticeSessionScreen> {
           // Post-Attempt Feedback & Mistake Remediation
           if (_submitted) ...[
             const StudyDivider(verticalPadding: AppSpacing.lg),
-            StudyFeedbackBanner(
-              kind: _isCorrect
-                  ? StudyFeedbackKind.success
-                  : StudyFeedbackKind.error,
-              title: _isCorrect
-                  ? 'Correct — scheduled for your next spaced revision'
-                  : 'Incorrect — scheduled for 1-day spaced revision',
-              message: !_isCorrect && misconception != null
-                  ? 'Why your choice is incorrect: $misconception'
-                  : null,
+            MotionEntrance(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  StudyFeedbackBanner(
+                    kind: _isCorrect
+                        ? StudyFeedbackKind.success
+                        : StudyFeedbackKind.error,
+                    title: _isCorrect
+                        ? 'Correct — scheduled for your next spaced revision'
+                        : 'Incorrect — scheduled for 1-day spaced revision',
+                    message: !_isCorrect && misconception != null
+                        ? 'Why your choice is incorrect: $misconception'
+                        : null,
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                  MathText(
+                    'Correct Answer: ${q.type == QuestionType.multiSelect && q.multiSelectAnswers.isNotEmpty ? q.multiSelectAnswers.join(', ') : q.correctAnswer}',
+                    style: theme.textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: AppSpacing.xxs),
+                  MathText(q.explanation, style: theme.textTheme.bodyMedium),
+                ],
+              ),
             ),
-            const SizedBox(height: AppSpacing.md),
-            Text(
-              'Correct Answer: ${q.correctAnswer}',
-              style: theme.textTheme.titleSmall,
-            ),
-            const SizedBox(height: AppSpacing.xxs),
-            Text(q.explanation, style: theme.textTheme.bodyMedium),
             if (q.numericalSteps != null) ...[
               const SizedBox(height: AppSpacing.md),
               AcademicSurface(
@@ -439,22 +603,22 @@ class _PracticeSessionScreenState extends ConsumerState<PracticeSessionScreen> {
                       style: theme.textTheme.titleSmall,
                     ),
                     const SizedBox(height: AppSpacing.xs),
-                    Text('1. Given: ${q.numericalSteps!.given.join(", ")}'),
-                    Text('2. Required: ${q.numericalSteps!.required}'),
-                    Text(
+                    MathText('1. Given: ${q.numericalSteps!.given.join(", ")}'),
+                    MathText('2. Required: ${q.numericalSteps!.required}'),
+                    MathText(
                       '3. Formula: ${q.numericalSteps!.formula}',
                       style: AppTypography.tabular(theme.textTheme.bodyMedium),
                     ),
-                    Text(
+                    MathText(
                       '4. Substitution: ${q.numericalSteps!.substitution}',
                       style: AppTypography.tabular(theme.textTheme.bodyMedium),
                     ),
-                    Text(
+                    MathText(
                       '5. Calculation: ${q.numericalSteps!.calculation}',
                       style: AppTypography.tabular(theme.textTheme.bodyMedium),
                     ),
                     const SizedBox(height: AppSpacing.xxs),
-                    Text(
+                    MathText(
                       '6. Answer: ${q.numericalSteps!.answerWithUnit}',
                       style: AppTypography.tabular(
                         theme.textTheme.labelLarge,

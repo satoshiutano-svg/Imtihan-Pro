@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   AlertTriangle,
   Check,
   CheckCircle2,
   Loader2,
+  Lock,
   Sparkles,
   Trash2,
 } from 'lucide-react';
@@ -63,11 +64,27 @@ export function SmartQuestionGenerator({
   const [difficultyMax, setDifficultyMax] = useState<number>(6);
   const [reviewerName, setReviewerName] = useState<string>('');
 
+  const [paidAiLocked, setPaidAiLocked] = useState<boolean>(true);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [summaryNote, setSummaryNote] = useState<string>('');
   const [drafts, setDrafts] = useState<GeneratedDraftItem[]>([]);
   const [savedBanner, setSavedBanner] = useState<string>('');
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/health')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { aiReady?: boolean; zeroCostDefault?: boolean } | null) => {
+        if (active && data) {
+          setPaidAiLocked(!data.aiReady);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleGenerate = async () => {
     setErrorMessage('');
@@ -208,6 +225,18 @@ export function SmartQuestionGenerator({
         </div>
 
         <div className="mt-4 space-y-4">
+          {paidAiLocked && (
+            <div className="flex items-start gap-2.5 rounded-lg border border-neutral-200 bg-[#F7FAF8] p-3.5 text-xs text-neutral-700 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-300">
+              <Lock className="mt-0.5 h-4 w-4 shrink-0 text-[#1B6B46] dark:text-[#6CD19B]" />
+              <div>
+                <strong>$0 Default Active: Paid Server AI Locked.</strong> External{' '}
+                <strong>Freebuff CLI</strong> and <strong>OpenCode</strong> agents author all
+                questions via the Agent &amp; MCP Bridge at $0 server cost. To unlock optional
+                server Gemini generation, toggle it in <strong>Admin Control → Zero-Cost Security Gate</strong>.
+              </div>
+            </div>
+          )}
+
           <div>
             <div className="mb-1.5 flex items-center justify-between text-xs">
               <label htmlFor="ai-extract-input" className="font-semibold text-neutral-800 dark:text-neutral-200">

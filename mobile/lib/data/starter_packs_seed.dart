@@ -36,6 +36,8 @@ class StarterPacksSeed {
       title: 'Kinematics',
       packVersion: 1,
       estimatedSizeKb: 240,
+      subjectName: 'Physics',
+      adConfig: ChapterAdConfig(),
       isBundledStarter: true,
       learningOutcomes: [
         'Distinguish between scalar and vector quantities with examples.',
@@ -90,22 +92,108 @@ class StarterPacksSeed {
           ],
           formulas: [
             FormulaItem(
-              expression: 'v = s / t',
-              description: 'Average speed (s = distance, t = time)',
-              unit: 'm s⁻¹',
+              expression: r'$$v = \frac{s}{t}$$',
+              description: 'Average speed ($s$ = distance, $t$ = time)',
+              unit: r'm s⁻¹',
             ),
             FormulaItem(
-              expression: 'a = (vf - vi) / t',
+              expression: r'$$a = \frac{v_f - v_i}{t}$$',
               description: 'Uniform acceleration',
-              unit: 'm s⁻²',
+              unit: r'm s⁻²',
             ),
           ],
           diagrams: [
             DiagramItem(
               id: 'diag_phy_9_2_1',
               caption:
-                  'Distance-Time graph: a straight inclined line shows uniform speed equal to the slope Δs / Δt.',
+                  'Distance-Time graph: a straight inclined line shows uniform speed equal to the slope $\\frac{\\Delta s}{\\Delta t}$.',
               svgMarkup: _distanceTimeGraphSvg,
+            ),
+          ],
+          motionGraphics: [
+            MotionGraphicSpec(
+              id: 'mg_phy_9_ch2_vel',
+              title: 'Uniform Acceleration Motion Scene',
+              caption:
+                  'Watch a bus accelerate uniformly from rest ($v_i = 0$) with $a = 2\\text{ m/s}^2$.',
+              durationSec: 5,
+              sceneType: 'kinematics_track',
+              actors: [
+                MotionActor(
+                  id: 'bus',
+                  label: 'Bus (a = 2 m/s²)',
+                  shape: 'box',
+                  colorToken: VisualColorToken.primary,
+                  startX: 12,
+                  startY: 60,
+                  endX: 86,
+                  endY: 60,
+                  size: 16,
+                ),
+                MotionActor(
+                  id: 'vel_vec',
+                  label: 'v⃗ increases',
+                  shape: 'arrow',
+                  colorToken: VisualColorToken.warning,
+                  startX: 16,
+                  startY: 36,
+                  endX: 86,
+                  endY: 36,
+                  size: 14,
+                ),
+              ],
+              stages: [
+                MotionStage(
+                  atPercent: 0,
+                  label: 't = 0 s (At Rest)',
+                  formulaLatex: r'v_i = 0\text{ m s}^{-1}',
+                  callout: 'Bus starts from rest at origin $s = 0\\text{ m}$.',
+                ),
+                MotionStage(
+                  atPercent: 50,
+                  label: 't = 5 s (Mid-Journey)',
+                  formulaLatex: r'v = v_i + at = 10\text{ m s}^{-1}',
+                  callout: 'Velocity increases linearly every second by $2\\text{ m/s}$.',
+                ),
+                MotionStage(
+                  atPercent: 100,
+                  label: 't = 10 s (Final Velocity)',
+                  formulaLatex: r'v_f = 20\text{ m s}^{-1},\; S = 100\text{ m}',
+                  callout: 'Total displacement covered under uniform acceleration.',
+                ),
+              ],
+            ),
+          ],
+          graphs: [
+            GraphSpec(
+              id: 'gr_phy_9_ch2_vt',
+              title: 'Velocity-Time Graph (Uniform Acceleration)',
+              caption:
+                  'Slope gives acceleration $a = 2\\text{ m s}^{-2}$; shaded area gives displacement $S = 100\\text{ m}$.',
+              xLabel: 'Time t (s)',
+              yLabel: 'Velocity v (m/s)',
+              xMin: 0,
+              xMax: 10,
+              yMin: 0,
+              yMax: 24,
+              series: [
+                GraphSeries(
+                  name: 'v(t) = 2t',
+                  colorToken: VisualColorToken.primary,
+                  showArea: true,
+                  points: [
+                    GraphPoint(x: 0, y: 0),
+                    GraphPoint(x: 2, y: 4),
+                    GraphPoint(x: 5, y: 10),
+                    GraphPoint(x: 8, y: 16),
+                    GraphPoint(x: 10, y: 20),
+                  ],
+                ),
+              ],
+              highlights: [
+                GraphHighlight(x: 5, y: 10, label: 't=5s → v=10 m/s'),
+                GraphHighlight(x: 10, y: 20, label: 't=10s → v=20 m/s'),
+              ],
             ),
           ],
           workedExamples: [
@@ -113,9 +201,9 @@ class StarterPacksSeed {
               prompt:
                   'A bus starts from rest and reaches a velocity of 20 m/s in 10 s. Calculate its acceleration.',
               steps: [
-                'Given: vi = 0 m/s, vf = 20 m/s, t = 10 s',
-                'Formula: a = (vf - vi) / t',
-                'Substitution: a = (20 - 0) / 10 = 20 / 10',
+                'Given: $v_i = 0\\text{ m/s}$, $v_f = 20\\text{ m/s}$, $t = 10\\text{ s}$',
+                r'Formula: $a = \frac{v_f - v_i}{t}$',
+                r'Substitution: $a = \frac{20 - 0}{10} = \frac{20}{10}$',
               ],
               finalAnswer: '2 m s⁻²',
             ),
@@ -206,29 +294,29 @@ class StarterPacksSeed {
           ],
           formulas: [
             FormulaItem(
-              expression: 'vf = vi + at',
-              description: 'First equation of motion (no S)',
+              expression: r'$$v_f = v_i + at$$',
+              description: 'First equation of motion (no $S$)',
               unit: 'm s⁻¹',
             ),
             FormulaItem(
-              expression: 'S = vi·t + ½ a t²',
-              description: 'Second equation of motion (no vf)',
+              expression: r'$$S = v_i t + \frac{1}{2}at^2$$',
+              description: 'Second equation of motion (no $v_f$)',
               unit: 'm',
             ),
             FormulaItem(
-              expression: '2aS = vf² - vi²',
-              description: 'Third equation of motion (no t)',
+              expression: r'$$2aS = v_f^2 - v_i^2$$',
+              description: 'Third equation of motion (no $t$)',
               unit: 'm² s⁻²',
             ),
           ],
           workedExamples: [
             WorkedExampleItem(
               prompt:
-                  'A train moving at 10 m/s accelerates at 2 m/s² for 5 s. Find the distance covered.',
+                  'A train moving at $10\\text{ m/s}$ accelerates at $2\\text{ m/s}^2$ for $5\\text{ s}$. Find the distance covered.',
               steps: [
-                'Given: vi = 10 m/s, a = 2 m/s², t = 5 s',
-                'Formula: S = vi·t + ½ a t²',
-                'S = (10)(5) + 0.5(2)(25) = 50 + 25',
+                'Given: $v_i = 10\\text{ m/s}$, $a = 2\\text{ m/s}^2$, $t = 5\\text{ s}$',
+                r'Formula: $S = v_i t + \frac{1}{2}at^2$',
+                r'$S = (10)(5) + \frac{1}{2}(2)(5)^2 = 50 + 25$',
               ],
               finalAnswer: '75 m',
             ),
@@ -409,6 +497,8 @@ class StarterPacksSeed {
       title: 'Chemical Equilibrium',
       packVersion: 1,
       estimatedSizeKb: 165,
+      subjectName: 'Chemistry',
+      adConfig: ChapterAdConfig(),
       isBundledStarter: true,
       learningOutcomes: [
         'Differentiate irreversible and reversible chemical reactions.',
@@ -445,18 +535,59 @@ class StarterPacksSeed {
           ],
           formulas: [
             FormulaItem(
-              expression: 'Kc = [C]^c [D]^d / ([A]^a [B]^b)',
-              description: 'For reaction aA + bB ⇌ cC + dD',
-              unit: 'Depends on Δn (mol dm⁻³)^Δn',
+              expression: r'$$K_c = \frac{[C]^c [D]^d}{[A]^a [B]^b}$$',
+              description: 'For reaction $aA + bB \\rightleftharpoons cC + dD$',
+              unit: r'Depends on $\Delta n$ $(\text{mol dm}^{-3})^{\Delta n}$',
+            ),
+          ],
+          graphs: [
+            GraphSpec(
+              id: 'gr_chem_10_ch9_rates',
+              title: 'Forward vs Reverse Reaction Rates Over Time',
+              caption:
+                  'Dynamic equilibrium is reached when $R_f = R_r$ ($t = 6\\text{ min}$).',
+              xLabel: 'Time (min)',
+              yLabel: 'Reaction Rate (mol/dm³·min)',
+              xMin: 0,
+              xMax: 10,
+              yMin: 0,
+              yMax: 10,
+              series: [
+                GraphSeries(
+                  name: 'Forward Rate (Rf)',
+                  colorToken: VisualColorToken.primary,
+                  points: [
+                    GraphPoint(x: 0, y: 9.5),
+                    GraphPoint(x: 2, y: 7.2),
+                    GraphPoint(x: 4, y: 5.7),
+                    GraphPoint(x: 6, y: 5.0),
+                    GraphPoint(x: 10, y: 5.0),
+                  ],
+                ),
+                GraphSeries(
+                  name: 'Reverse Rate (Rr)',
+                  colorToken: VisualColorToken.warning,
+                  points: [
+                    GraphPoint(x: 0, y: 0.0),
+                    GraphPoint(x: 2, y: 2.5),
+                    GraphPoint(x: 4, y: 4.3),
+                    GraphPoint(x: 6, y: 5.0),
+                    GraphPoint(x: 10, y: 5.0),
+                  ],
+                ),
+              ],
+              highlights: [
+                GraphHighlight(x: 6, y: 5.0, label: 'Equilibrium (Rf = Rr)'),
+              ],
             ),
           ],
           workedExamples: [
             WorkedExampleItem(
-              prompt: 'Write Kc and its unit for N₂(g) + 3H₂(g) ⇌ 2NH₃(g).',
+              prompt: 'Write $K_c$ and its unit for $\\text{N}_2(g) + 3\\text{H}_2(g) \\rightleftharpoons 2\\text{NH}_3(g)$.',
               steps: [
-                'Kc = [NH₃]² / ([N₂][H₂]³)',
+                r'$K_c = \frac{[\text{NH}_3]^2}{[\text{N}_2][\text{H}_2]^3}$',
                 'Moles on product side = 2; reactant side = 1 + 3 = 4',
-                'Net unit = (mol dm⁻³)² / (mol dm⁻³)⁴ = mol⁻² dm⁶',
+                r'Net unit $= \frac{(\text{mol dm}^{-3})^2}{(\text{mol dm}^{-3})^4} = \text{mol}^{-2}\text{dm}^6$',
               ],
               finalAnswer: 'Kc = [NH₃]² / ([N₂][H₂]³), unit: mol⁻² dm⁶',
             ),

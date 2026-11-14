@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from './types';
 import { adminRoutes } from './routes/admin';
+import { agentRoutes } from './routes/agent';
 import { publicRoutes } from './routes/public';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -8,7 +9,7 @@ const app = new Hono<{ Bindings: Env }>();
 // Security headers & lightweight per-IP rate limiting
 app.use('*', async (c, next) => {
   c.header('X-Content-Type-Options', 'nosniff');
-  c.header('X-Frame-Options', 'DENY');
+  c.header('X-Frame-Options', 'SAMEORIGIN');
   c.header('Referrer-Policy', 'no-referrer');
 
   const rawMax = Number(c.env.RATE_LIMIT_MAX_REQUESTS ?? '120');
@@ -35,5 +36,7 @@ app.use('*', async (c, next) => {
 
 app.route('/v1', publicRoutes);
 app.route('/v1/admin', adminRoutes);
+app.route('/v1/agent', agentRoutes);
 
 export default app;
+

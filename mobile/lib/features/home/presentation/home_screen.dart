@@ -6,6 +6,7 @@ import 'package:roshan_study/app/theme/app_typography.dart';
 import 'package:roshan_study/core/models/curriculum_models.dart';
 import 'package:roshan_study/core/models/progress_models.dart';
 import 'package:roshan_study/core/widgets/academic_surface.dart';
+import 'package:roshan_study/core/widgets/motion_system.dart';
 import 'package:roshan_study/core/widgets/share_study_card_sheet.dart';
 import 'package:roshan_study/data/kpk_subject_catalog.dart';
 import 'package:roshan_study/data/repositories/content_repository.dart';
@@ -197,11 +198,11 @@ class HomeScreen extends ConsumerWidget {
 
         const StudyDivider(verticalPadding: AppSpacing.xl),
 
-        // 5-Minute Study Goal & Daily 10-MCQ (unboxed with clear hierarchy)
+        // 5-Minute Study Goal & Daily Question Target
         StudySectionHeader(
           title: 'Daily 5-Minute Routine',
           subtitle:
-              '${dailyGoal.questionsCompleted}/${DailyGoalProgress.dailyQuestionTarget} questions today • ${dailyGoal.graceFreezesRemaining} grace freeze${dailyGoal.graceFreezesRemaining == 1 ? '' : 's'} left',
+              '${dailyGoal.questionsCompleted}/${profile.dailyQuestionTarget} questions today • ${dailyGoal.graceFreezesRemaining} grace freeze${dailyGoal.graceFreezesRemaining == 1 ? '' : 's'} left',
           trailing: Text(
             '${dailyGoal.streakDays}-day streak',
             style: AppTypography.tabular(
@@ -211,7 +212,10 @@ class HomeScreen extends ConsumerWidget {
           ),
         ),
         const SizedBox(height: AppSpacing.sm),
-        LinearProgressIndicator(value: dailyGoal.completionFraction),
+        AnimatedProgressTrack(
+          value: (dailyGoal.questionsCompleted / profile.dailyQuestionTarget)
+              .clamp(0.0, 1.0),
+        ),
         const SizedBox(height: AppSpacing.md),
         Wrap(
           spacing: AppSpacing.xs,
@@ -251,7 +255,7 @@ class HomeScreen extends ConsumerWidget {
                   : '${(report.verifiedAccuracy! * 100).round()}% Verified Accuracy',
               lines: [
                 'Questions Practised: ${report.questionsAttempted}',
-                'Today Goal: ${dailyGoal.questionsCompleted}/${DailyGoalProgress.dailyQuestionTarget} Qs',
+                'Today Goal: ${dailyGoal.questionsCompleted}/${profile.dailyQuestionTarget} Qs',
                 'Topics Studied: ${report.topicsStudied}',
               ],
             ),

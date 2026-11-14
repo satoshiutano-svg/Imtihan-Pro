@@ -8,8 +8,12 @@ import {
   ShieldCheck,
   Sun,
 } from 'lucide-react';
+import { MotionConfig } from 'motion/react';
+import { AgentBridgePanel } from './components/AgentBridgePanel';
 import { AnalyticsView } from './components/AnalyticsView';
 import { BookUploader } from './components/BookUploader';
+import { MotionScreenSwap } from './components/MotionSystem';
+import { ProductionControlPanel } from './components/ProductionControlPanel';
 import { SmartQuestionGenerator } from './components/SmartQuestionGenerator';
 import { StudentPreview } from './components/StudentPreview';
 import { INITIAL_CMS_CHAPTERS, KPK_BOARDS } from './data/cmsSeed';
@@ -21,9 +25,10 @@ import type {
   QuestionType,
   SandboxAttemptRecord,
   SourceType,
+  VerificationReport,
 } from './types/cms';
 
-type WorkspaceSection = 'preview' | 'uploader' | 'studio' | 'analytics';
+type WorkspaceSection = 'preview' | 'ops' | 'uploader' | 'studio' | 'analytics';
 
 const STORAGE_CHAPTERS_KEY = 'roshan_study_cms_chapters_v2';
 const STORAGE_ATTEMPTS_KEY = 'roshan_study_sandbox_attempts_v2';
@@ -124,9 +129,10 @@ export default function App() {
   const [activeChapterId, setActiveChapterId] = useState<string>(
     chapters[0]?.chapterId ?? 'phy_9_ch2',
   );
-  const [studioTab, setStudioTab] = useState<'ai_generator' | 'concepts' | 'videos' | 'questions'>(
-    'ai_generator',
-  );
+  const [verificationReports, setVerificationReports] = useState<VerificationReport[]>([]);
+  const [studioTab, setStudioTab] = useState<
+    'ai_generator' | 'agent_bridge' | 'concepts' | 'videos' | 'questions'
+  >('ai_generator');
 
   // Concept form
   const [cTitle, setCTitle] = useState('');
@@ -182,6 +188,72 @@ export default function App() {
     }
   }, [attempts]);
 
+  const refreshCloudWorkspace = async () => {
+    try {
+      const [chapRes, opsRes] = await Promise.all([
+        fetch('/api/cms/chapters'),
+        fetch('/api/cms/ops-overview'),
+      ]);
+      if (chapRes.ok) {
+        const chapData = (await chapRes.json()) as { chapters?: CmsChapter[] };
+        if (Array.isArray(chapData.chapters) && chapData.chapters.length > 0) {
+          setChapters(chapData.chapters);
+        }
+      }
+      if (opsRes.ok) {
+        const opsData = (await opsRes.json()) as {
+          verificationReports?: VerificationReport[];
+        };
+        if (Array.isArray(opsData.verificationReports)) {
+          setVerificationReports(opsData.verificationReports);
+        }
+      }
+    } catch {
+      // Keep localStorage cache if server unavailable
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
+    const hydrateFromCloud = async () => {
+      try {
+        const [chapRes, opsRes] = await Promise.all([
+          fetch('/api/cms/chapters'),
+          fetch('/api/cms/ops-overview'),
+        ]);
+        if (!active) return;
+        if (chapRes.ok) {
+          const data = (await chapRes.json()) as { chapters?: CmsChapter[] };
+          if (active && Array.isArray(data.chapters) && data.chapters.length > 0) {
+            setChapters(data.chapters);
+          }
+        }
+        if (opsRes.ok) {
+          const opsData = (await opsRes.json()) as {
+            verificationReports?: VerificationReport[];
+          };
+          if (active && Array.isArray(opsData.verificationReports)) {
+            setVerificationReports(opsData.verificationReports);
+          }
+        }
+      } catch {
+        // Keep localStorage cache if server unavailable
+      }
+    };
+    void hydrateFromCloud();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const draftQueueCount = useMemo(
+    () =>
+      chapters.filter(
+        (c) => c.publicationStatus === 'draft' || c.publicationStatus === 'in_review',
+      ).length,
+    [chapters],
+  );
+
   const activeChapter = useMemo(
     () => chapters.find((c) => c.chapterId === activeChapterId) ?? chapters[0],
     [chapters, activeChapterId],
@@ -192,27 +264,112 @@ export default function App() {
     [activeChapter],
   );
 
+  const syncUpdatedChapter = (nextChapter: CmsChapter) => {
+    void fetch(`/api/cms/chapters/${encodeURIComponent(nextChapter.chapterId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nextChapter),
+    }).catch(() => undefined);
+  };
+
   const updateChapter = (
     chapterId: string,
     updater: (ch: CmsChapter) => CmsChapter,
   ) => {
     setChapters((prev) =>
-      prev.map((c) => (c.chapterId === chapterId ? updater(c) : c)),
+      prev.map((c) => {
+        if (c.chapterId !== chapterId) return c;
+        const next = updater(c);
+        syncUpdatedChapter(next);
+        return next;
+      }),
     );
   };
 
   const handleImportChapters = (incoming: CmsChapter[]) => {
     setChapters((prev) => {
-      const existingIds = new Set(prev.map((p) => p.chapterId));
-      const next = [...prev];
+      const byId = new Map(prev.map((p) => [p.chapterId, p]));
       for (const ch of incoming) {
-        if (!existingIds.has(ch.chapterId)) next.push(ch);
+        byId.set(ch.chapterId, ch);
       }
-      return next;
+      return Array.from(byId.values());
     });
     if (incoming[0]) {
       setActiveChapterId(incoming[0].chapterId);
     }
+    void fetch('/api/cms/chapters/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chapters: incoming }),
+    }).catch(() => undefined);
+  };
+
+  const handleApproveAndPublishCloud = async (chapterId: string, reviewedBy: string) => {
+    const res = await fetch(`/api/cms/chapters/${encodeURIComponent(chapterId)}/approve-publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reviewedBy, verifyPermission: true }),
+    });
+    const data = (await res.json()) as { chapter?: CmsChapter; message?: string };
+    if (!res.ok || !data.chapter) {
+      throw new Error(data.message || 'Could not approve and publish chapter.');
+    }
+    setChapters((prev) => {
+      const exists = prev.some((c) => c.chapterId === data.chapter!.chapterId);
+      if (exists) {
+        return prev.map((c) => (c.chapterId === data.chapter!.chapterId ? data.chapter! : c));
+      }
+      return [data.chapter!, ...prev];
+    });
+  };
+
+  const handleDeleteCloudChapter = async (chapterId: string) => {
+    await fetch(`/api/cms/chapters/${encodeURIComponent(chapterId)}`, { method: 'DELETE' }).catch(
+      () => undefined,
+    );
+    setChapters((prev) => prev.filter((c) => c.chapterId !== chapterId));
+  };
+
+  const handleRunVerification = async (chapterId: string) => {
+    const res = await fetch(`/api/cms/chapters/${encodeURIComponent(chapterId)}/verify`, {
+      method: 'POST',
+    });
+    const data = (await res.json()) as {
+      report?: VerificationReport;
+      chapters?: CmsChapter[];
+      message?: string;
+    };
+    if (!res.ok || !data.report) {
+      throw new Error(data.message || 'Verification audit failed.');
+    }
+    if (Array.isArray(data.chapters) && data.chapters.length > 0) {
+      setChapters(data.chapters);
+    }
+    setVerificationReports((prev) => [
+      data.report!,
+      ...prev.filter((r) => r.chapterId !== data.report!.chapterId),
+    ]);
+  };
+
+  const handleBatchApproveVerified = async (chapterIds: string[], reviewedBy: string) => {
+    const res = await fetch('/api/cms/chapters/batch-approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chapterIds, reviewedBy }),
+    });
+    const data = (await res.json()) as {
+      approved?: string[];
+      skipped?: { chapterId: string; reason: string }[];
+      message?: string;
+    };
+    if (!res.ok) {
+      throw new Error(data.message || 'Batch approval failed.');
+    }
+    await refreshCloudWorkspace();
+    return {
+      approved: Array.isArray(data.approved) ? data.approved.length : 0,
+      skipped: Array.isArray(data.skipped) ? data.skipped.length : 0,
+    };
   };
 
   const handleAddGeneratedQuestions = (chapterId: string, incoming: CmsQuestion[]) => {
@@ -483,8 +640,9 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#F7FAF8] text-neutral-900 dark:bg-[#101412] dark:text-neutral-100">
-      {/* Strict 3-Zone Top Bar Contract */}
+    <MotionConfig reducedMotion="user">
+      <div className="min-h-screen bg-[#F7FAF8] text-neutral-900 dark:bg-[#101412] dark:text-neutral-100">
+        {/* Strict 3-Zone Top Bar Contract */}
       <header className="border-b border-neutral-200 bg-white px-6 py-3.5 dark:border-neutral-800 dark:bg-[#171D1A]">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-8">
           <button
@@ -498,9 +656,10 @@ export default function App() {
           <nav className="flex items-center gap-6 overflow-x-auto text-sm font-medium text-neutral-600 dark:text-neutral-300">
             {(
               [
-                ['preview', 'Student Preview'],
-                ['uploader', 'Book Uploader'],
-                ['studio', 'Content Studio'],
+                ['preview', 'Student App'],
+                ['ops', 'Admin Control'],
+                ['uploader', 'Books & Uploader'],
+                ['studio', 'Content & Inbox'],
                 ['analytics', 'Analytics'],
               ] as const
             ).map(([id, label]) => (
@@ -535,6 +694,7 @@ export default function App() {
         <div>
           <h1 className="text-xl font-bold tracking-tight text-neutral-900 dark:text-neutral-100">
             {section === 'preview' && 'KPK Student Interactive Learning Preview'}
+            {section === 'ops' && 'Autonomous AI Production Control & Monitoring'}
             {section === 'uploader' && 'Easy Book Importer & Sample Pack Generator'}
             {section === 'studio' && 'Content Studio & Publish Validation Gate'}
             {section === 'analytics' && 'Coverage Analytics & 10k DAU Planner'}
@@ -556,10 +716,29 @@ export default function App() {
 
       {/* Main Content */}
       <main className="mx-auto max-w-6xl px-6 py-6">
+        <MotionScreenSwap motionKey={section}>
         {section === 'preview' && (
           <StudentPreview
             chapters={chapters}
+            attempts={attempts}
             onRecordAttempt={(a) => setAttempts((prev) => [a, ...prev])}
+            onClearAttempts={() => setAttempts([])}
+          />
+        )}
+
+        {section === 'ops' && (
+          <ProductionControlPanel
+            chapters={chapters}
+            onRefreshChapters={refreshCloudWorkspace}
+            onOpenDraftInbox={() => {
+              setSection('studio');
+              setStudioTab('agent_bridge');
+            }}
+            onInspectChapter={(chapterId) => {
+              setActiveChapterId(chapterId);
+              setSection('studio');
+              setStudioTab('concepts');
+            }}
           />
         )}
 
@@ -571,6 +750,11 @@ export default function App() {
               setSection('studio');
               setStudioTab('ai_generator');
             }}
+            onOpenAgentBridge={() => {
+              setSection('studio');
+              setStudioTab('agent_bridge');
+            }}
+            onOpenOpsControl={() => setSection('ops')}
           />
         )}
 
@@ -682,6 +866,7 @@ export default function App() {
                   {(
                     [
                       ['ai_generator', 'AI Question Generator'],
+                      ['agent_bridge', `AI Agent & MCP Bridge (${draftQueueCount} drafts)`],
                       ['concepts', 'Concepts (12-Part)'],
                       ['videos', 'YouTube Links & Urdu Help'],
                       ['questions', `Questions (${activeChapter.questions.length})`],
@@ -707,6 +892,22 @@ export default function App() {
                 <SmartQuestionGenerator
                   chapter={activeChapter}
                   onAddQuestionsToChapter={handleAddGeneratedQuestions}
+                />
+              )}
+
+              {studioTab === 'agent_bridge' && (
+                <AgentBridgePanel
+                  chapters={chapters}
+                  verificationReports={verificationReports}
+                  onApproveAndPublish={handleApproveAndPublishCloud}
+                  onBatchApproveVerified={handleBatchApproveVerified}
+                  onRunVerification={handleRunVerification}
+                  onDeleteChapter={handleDeleteCloudChapter}
+                  onSelectChapter={(chapterId) => {
+                    setActiveChapterId(chapterId);
+                    setStudioTab('concepts');
+                  }}
+                  onRefreshWorkspace={refreshCloudWorkspace}
                 />
               )}
 
@@ -866,11 +1067,14 @@ export default function App() {
                         className="rounded-lg border border-neutral-200 bg-white px-2.5 py-2 dark:border-neutral-700 dark:bg-neutral-800"
                       >
                         <option value="mcq">MCQ</option>
-                        <option value="conceptual">Conceptual</option>
+                        <option value="multi_select">Multi-Select</option>
+                        <option value="true_false">True / False</option>
                         <option value="fill_in">Fill-in</option>
+                        <option value="matching">Matching</option>
                         <option value="numerical">Numerical (6-Step)</option>
                         <option value="short_answer">Short Answer</option>
                         <option value="long_answer">Long Answer</option>
+                        <option value="conceptual">Conceptual</option>
                       </select>
                       <select
                         value={qDifficulty}
@@ -1047,7 +1251,9 @@ export default function App() {
             </div>
           </div>
         )}
+        </MotionScreenSwap>
       </main>
     </div>
+    </MotionConfig>
   );
 }

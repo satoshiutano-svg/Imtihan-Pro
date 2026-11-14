@@ -9,9 +9,12 @@ export const ProgrammeIdSchema = z.enum([
 
 export const QuestionTypeSchema = z.enum([
   'mcq',
+  'multi_select',
+  'true_false',
+  'fill_in',
+  'matching',
   'conceptual',
   'recall',
-  'fill_in',
   'numerical',
   'short_answer',
   'long_answer',
@@ -57,6 +60,85 @@ export const GlossaryHintSchema = z.object({
   simpleHint: z.string().min(1),
 });
 
+export const VisualColorTokenSchema = z.enum([
+  'primary',
+  'secondary',
+  'warning',
+  'danger',
+]);
+
+export const MotionActorSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  shape: z.enum(['circle', 'box', 'arrow', 'molecule', 'wave']),
+  colorToken: VisualColorTokenSchema.default('primary'),
+  startX: z.number().min(0).max(100),
+  startY: z.number().min(0).max(100),
+  endX: z.number().min(0).max(100),
+  endY: z.number().min(0).max(100),
+  size: z.number().min(4).max(40).optional(),
+});
+
+export const MotionStageSchema = z.object({
+  atPercent: z.number().min(0).max(100),
+  label: z.string().min(1),
+  formulaLatex: z.string().optional(),
+  callout: z.string().min(2),
+});
+
+export const MotionGraphicSpecSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(2),
+  caption: z.string().min(2),
+  durationSec: z.number().min(1).max(30).default(5),
+  sceneType: z.enum([
+    'kinematics_track',
+    'vector_motion',
+    'reaction_flow',
+    'wave_oscillation',
+    'orbit_cycle',
+  ]),
+  actors: z.array(MotionActorSchema).min(1),
+  stages: z.array(MotionStageSchema).min(1),
+});
+
+export const GraphSpecSchema = z
+  .object({
+    id: z.string().min(1),
+    title: z.string().min(2),
+    caption: z.string().min(2),
+    xLabel: z.string().min(1),
+    yLabel: z.string().min(1),
+    xMin: z.number().finite(),
+    xMax: z.number().finite(),
+    yMin: z.number().finite(),
+    yMax: z.number().finite(),
+    series: z
+      .array(
+        z.object({
+          name: z.string().min(1),
+          colorToken: VisualColorTokenSchema.default('primary'),
+          points: z
+            .array(z.object({ x: z.number().finite(), y: z.number().finite() }))
+            .min(2),
+          showArea: z.boolean().optional(),
+        }),
+      )
+      .min(1),
+    highlights: z
+      .array(
+        z.object({
+          x: z.number().finite(),
+          y: z.number().finite(),
+          label: z.string().min(1),
+        }),
+      )
+      .default([]),
+  })
+  .refine((g) => g.xMax > g.xMin && g.yMax > g.yMin, {
+    message: 'Graph bounds must satisfy xMax > xMin and yMax > yMin.',
+  });
+
 export const MicroCardSchema = z.object({
   stageTitle: z.string().min(2),
   body: z.string().min(5),
@@ -99,6 +181,8 @@ export const ConceptPayloadSchema = z.object({
   })).default([]),
   quickRevisionSummary: z.array(z.string()).min(1),
   relatedQuestionIds: z.array(z.string()).default([]),
+  motionGraphics: z.array(MotionGraphicSpecSchema).default([]),
+  graphs: z.array(GraphSpecSchema).default([]),
   videoLinks: z.array(VideoLinkSchema).default([]),
   glossaryHints: z.array(GlossaryHintSchema).default([]),
   microCards: z.array(MicroCardSchema).default([]),
@@ -122,6 +206,8 @@ export const QuestionInputSchema = z.object({
   locale: z.enum(['en', 'ur']).default('en'),
   textDirection: z.enum(['ltr', 'rtl']).default('ltr'),
   options: z.array(z.string()).default([]),
+  multiSelectAnswers: z.array(z.string()).optional(),
+  matchingPairs: z.array(z.object({ left: z.string().min(1), right: z.string().min(1) })).optional(),
   optionMisconceptions: z.record(z.string()).default({}),
   hints: z.array(z.string()).default([]),
   numericalSteps: NumericalStepsSchema.optional(),
@@ -129,13 +215,18 @@ export const QuestionInputSchema = z.object({
   correctAnswer: z.string().min(1),
   explanation: z.string().min(5),
   marks: z.number().int().min(1).max(20).default(1),
-  sourceType: SourceTypeSchema,
+  sourceType: SourceTypeSchema.default('practice_original'),
   sourceBoardId: z.string().optional(),
   sourceYear: z.number().int().min(1990).max(2035).optional(),
   sourcePaperRef: z.string().optional(),
   sourcePageRef: z.string().optional(),
   origin: z
-    .enum(['human_authored', 'ai_generated_draft', 'ai_reviewed'])
+    .enum([
+      'human_authored',
+      'ai_generated_draft',
+      'ai_reviewed',
+      'agent_uploaded_draft',
+    ])
     .default('human_authored'),
   reviewedBy: z.string().optional(),
 }).superRefine((data, ctx) => {
@@ -178,4 +269,144 @@ export const SyncAttemptBatchSchema = z.object({
       attemptedAt: z.string().datetime(),
     }),
   ).min(1).max(100),
+});
+
+export const ExamBlueprintSchema = z.object({
+  id: z.string().min(1),
+  programmeId: ProgrammeIdSchema.default('ssc_hssc'),
+  grade: z.number().int().min(9).max(12),
+  groupId: z.string().min(1),
+  subjectId: z.string().min(1),
+  subjectName: z.string().min(1),
+  chapterId: z.string().optional(),
+  title: z.string().min(2),
+  examKind: z.enum([
+    'topic_quiz',
+    'chapter_test',
+    'subject_test',
+    'board_model_exam',
+    'mock_exam',
+  ]),
+  durationMinutes: z.number().int().min(1).max(240),
+  totalMarks: z.number().int().min(1).max(200),
+  sections: z
+    .array(
+      z.object({
+        label: z.string().min(1),
+        questionType: QuestionTypeSchema,
+        marksEach: z.number().int().min(1).max(20),
+        questionIds: z.array(z.string().min(1)),
+      }),
+    )
+    .min(1),
+  publicationStatus: z
+    .enum(['draft', 'in_review', 'approved', 'published', 'unpublished'])
+    .default('draft'),
+  reviewStage: z
+    .enum([
+      'ai_generated',
+      'auto_validated',
+      'independently_reviewed',
+      'human_approved',
+      'published',
+    ])
+    .default('ai_generated'),
+  packVersion: z.number().int().min(1).default(1),
+  reviewedBy: z.string().default(''),
+});
+
+export const SyncChapterPackSchema = z.object({
+  chapter: z.object({
+    chapterId: z.string().min(1),
+    programmeId: ProgrammeIdSchema.default('ssc_hssc'),
+    grade: z.number().int().min(9).max(12),
+    groupId: z.string().min(1),
+    subjectId: z.string().min(1),
+    subjectName: z.string().min(1),
+    chapterNumber: z.number().int().min(1),
+    title: z.string().min(2),
+    learningOutcomes: z.array(z.string()).default([]),
+    permissionVerified: z.boolean(),
+    packVersion: z.number().int().min(1).default(1),
+    concepts: z.array(z.record(z.unknown())).min(1),
+    questions: z.array(z.record(z.unknown())).default([]),
+  }),
+  reviewedBy: z.string().min(2),
+  exams: z.array(ExamBlueprintSchema).default([]),
+});
+
+export const BookUploadMetadataSchema = z.object({
+  id: z.string().min(1).optional(),
+  title: z.string().min(2),
+  programmeId: ProgrammeIdSchema.default('ssc_hssc'),
+  grade: z.number().int().min(9).max(12),
+  groupId: z.string().min(1),
+  subjectId: z.string().min(1).optional(),
+  subjectName: z.string().min(1),
+  curriculum: z.string().default('KPK BISE'),
+  sha256: z.string().min(16).optional(),
+  fileSizeBytes: z.number().int().nonnegative().optional(),
+  pageCount: z.number().int().min(1).default(1),
+  filename: z.string().min(1).optional(),
+  r2Key: z.string().min(1).optional(),
+  permissionVerified: z.boolean().default(true),
+  isStudentVisible: z.boolean().default(true),
+});
+
+export const AgentRegistrationSchema = z.object({
+  workerId: z.string().min(2).max(80),
+  name: z.string().min(2).max(120),
+  toolKind: z.enum(['freebuff', 'opencode', 'cursor', 'claude_code', 'codex', 'verifier', 'other']).default('other'),
+  roles: z.array(z.string().min(1)).default([]),
+  capabilities: z.array(z.string().min(1)).default([]),
+  quotaRemainingNote: z.string().optional(),
+});
+
+export const AgentClaimTaskSchema = z.preprocess(
+  (raw) => {
+    if (raw && typeof raw === 'object' && !('workerId' in raw) && 'workerName' in raw) {
+      return { ...(raw as Record<string, unknown>), workerId: (raw as Record<string, unknown>).workerName };
+    }
+    return raw;
+  },
+  z.object({
+    workerId: z.string().min(2).max(80),
+    role: z.string().optional(),
+    leaseMinutes: z.number().int().min(1).max(60).default(15),
+  }),
+);
+
+export const ExamScoreSubmissionSchema = z.object({
+  submissionUuid: z.string().min(6).max(120),
+  deviceUuid: z.string().optional(),
+  timeSpentSec: z.number().int().min(0).max(28800).default(0),
+  answers: z
+    .array(
+      z.object({
+        questionId: z.string().min(1),
+        response: z.string().default(''),
+        selfScore: z.number().min(0).max(100).optional(),
+      }),
+    )
+    .max(250),
+});
+
+export const StructureProposalSchema = z.object({
+  workerName: z.string().min(2).max(100).default('external-architect'),
+  summary: z.string().min(3).max(1000).optional(),
+  bookId: z.string().optional(),
+  chapters: z
+    .array(
+      z.object({
+        chapterNumber: z.number().int().min(1),
+        title: z.string().min(2),
+        topics: z.array(z.string().min(1)).min(1),
+        learningObjectives: z.array(z.string()).default([]),
+        prerequisites: z.array(z.string()).default([]),
+        estimatedConcepts: z.number().int().min(1).max(30).default(2),
+        estimatedQuestions: z.number().int().min(1).max(100).default(8),
+        sourcePages: z.string().optional(),
+      }),
+    )
+    .min(1),
 });

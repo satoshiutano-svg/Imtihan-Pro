@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -10,6 +11,10 @@ import 'package:roshan_study/core/database/local_database.dart';
 import 'package:roshan_study/core/models/curriculum_models.dart';
 import 'package:roshan_study/core/models/progress_models.dart';
 import 'package:roshan_study/core/utils/answer_matcher.dart';
+import 'package:roshan_study/core/widgets/math_graph_view.dart';
+import 'package:roshan_study/core/widgets/math_text.dart';
+import 'package:roshan_study/core/widgets/motion_graphic_player.dart';
+import 'package:roshan_study/core/widgets/motion_system.dart';
 import 'package:roshan_study/data/kpk_subject_catalog.dart';
 import 'package:roshan_study/data/repositories/content_repository.dart';
 import 'package:roshan_study/data/repositories/profile_repository.dart';
@@ -287,6 +292,296 @@ void main() {
       await tester.tap(find.text('Learn'));
       await tester.pumpAndSettle();
       expect(find.textContaining('Ch 2: Kinematics'), findsOneWidget);
+    });
+  });
+
+  group('Phase 12 — Unlimited Dynamic Cloud Packs & Offline Visual Widgets', () {
+    test('hydrates dynamic cloud ChapterPack JSON from SQLite and supports searchPacks', () {
+      final db = LocalDatabase.inMemory();
+      addTearDown(db.close);
+      final repo = ContentRepository(db);
+
+      final cloudMap = <String, dynamic>{
+        'chapterId': 'math_10_ch1_cloud',
+        'programmeId': 'ssc_hssc',
+        'grade': 10,
+        'subjectId': 'math_10',
+        'subjectName': 'Mathematics',
+        'chapterNumber': 1,
+        'title': 'Quadratic Equations (Cloud Pack)',
+        'packVersion': 2,
+        'estimatedSizeKb': 110,
+        'learningOutcomes': ['Solve quadratic equations by completing square and formula.'],
+        'concepts': [
+          {
+            'id': 'c_math_10_1_cloud',
+            'chapterId': 'math_10_ch1_cloud',
+            'topicId': 't_math_10_1',
+            'orderIndex': 1,
+            'title': 'Quadratic Formula',
+            'simpleExplanation': r'Roots of $ax^2 + bx + c = 0$ are $x = \frac{-b \pm \sqrt{b^2-4ac}}{2a}$.',
+            'formulas': [
+              {
+                'expression': r'$$x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}$$',
+                'description': 'Standard quadratic formula',
+              },
+            ],
+            'sourceBook': 'KPECTB Mathematics Grade 10',
+            'sourcePage': 'Ch. 1, p. 12',
+          },
+        ],
+        'questions': [
+          {
+            'id': 'q_math_10_1_cloud',
+            'programmeId': 'ssc_hssc',
+            'grade': 10,
+            'subjectId': 'math_10',
+            'chapterId': 'math_10_ch1_cloud',
+            'topicId': 't_math_10_1',
+            'conceptId': 'c_math_10_1_cloud',
+            'questionType': 'mcq',
+            'difficulty': 2,
+            'statement': r'If discriminant $b^2 - 4ac = 0$, the roots are:',
+            'options': ['Real and equal', 'Imaginary', 'Unequal', 'Undefined'],
+            'correctAnswer': 'Real and equal',
+            'explanation': r'When $b^2 - 4ac = 0$, both roots equal $\frac{-b}{2a}$.',
+            'marks': 1,
+          },
+        ],
+      };
+
+      final rawJson = jsonEncode(cloudMap);
+      final sha = sha256.convert(utf8.encode(rawJson)).toString();
+      final pack = ChapterPack.fromJson(cloudMap);
+      repo.saveVerifiedChapterPack(pack: pack, rawJson: rawJson, expectedSha256: sha);
+
+      final hydrated = repo.getPackById('math_10_ch1_cloud');
+      expect(hydrated, isNotNull);
+      expect(hydrated!.title, 'Quadratic Equations (Cloud Pack)');
+      expect(repo.getConceptById('c_math_10_1_cloud'), isNotNull);
+      expect(repo.getQuestionById('q_math_10_1_cloud'), isNotNull);
+
+      final matches = repo.searchPacks(
+        programmeId: ProgrammeId.sscHssc,
+        query: 'quadratic',
+        grade: 10,
+      );
+      expect(matches.length, 1);
+      expect(matches.first.chapterId, 'math_10_ch1_cloud');
+    });
+
+    testWidgets('renders MathText, MotionGraphicPlayer, and MathGraphView offline', (tester) async {
+      const motionSpec = MotionGraphicSpec(
+        id: 'mg_test',
+        title: 'Test Kinematics Scene',
+        caption: r'Velocity $v = \frac{s}{t}$',
+        durationSec: 4,
+        sceneType: 'kinematics_track',
+        actors: [
+          MotionActor(
+            id: 'car',
+            label: 'Car',
+            shape: 'box',
+            colorToken: VisualColorToken.primary,
+            startX: 10,
+            startY: 50,
+            endX: 90,
+            endY: 50,
+          ),
+        ],
+        stages: [
+          MotionStage(
+            atPercent: 0,
+            label: 'Start',
+            formulaLatex: r'v_i = 0',
+            callout: 'At origin',
+          ),
+          MotionStage(
+            atPercent: 100,
+            label: 'End',
+            formulaLatex: r'v_f = 20\text{ m/s}',
+            callout: 'Final velocity',
+          ),
+        ],
+      );
+
+      const graphSpec = GraphSpec(
+        id: 'gr_test',
+        title: 'Test Velocity Graph',
+        caption: 'Linear uniform acceleration',
+        xLabel: 't (s)',
+        yLabel: 'v (m/s)',
+        xMin: 0,
+        xMax: 10,
+        yMin: 0,
+        yMax: 20,
+        series: [
+          GraphSeries(
+            name: 'v(t)',
+            colorToken: VisualColorToken.primary,
+            showArea: true,
+            points: [
+              GraphPoint(x: 0, y: 0),
+              GraphPoint(x: 10, y: 20),
+            ],
+          ),
+        ],
+        highlights: [GraphHighlight(x: 5, y: 10, label: 'Midpoint')],
+      );
+
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: Column(
+                children: [
+                  MathText(r'Formula: $$a = \frac{v_f - v_i}{t}$$'),
+                  MotionGraphicPlayer(spec: motionSpec),
+                  MathGraphView(spec: graphSpec),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('Test Kinematics Scene'), findsOneWidget);
+      expect(find.text('Test Velocity Graph'), findsOneWidget);
+      expect(find.text('Midpoint'), findsOneWidget);
+    });
+  });
+
+  group('Phase 13 — Extended Formats, Onboarding Goal & Motion System', () {
+    test('validates multi_select, true_false, and matching answers without substring leaks', () {
+      expect(
+        AnswerMatcher.isMatch(
+          userRaw: 'Velocity||Displacement',
+          expectedRaw: 'Displacement||Velocity',
+          type: QuestionType.multiSelect,
+        ),
+        isTrue,
+      );
+      expect(
+        AnswerMatcher.isMatch(
+          userRaw: 'Velocity',
+          expectedRaw: 'Displacement||Velocity',
+          type: QuestionType.multiSelect,
+        ),
+        isFalse,
+      );
+      expect(
+        AnswerMatcher.isMatch(
+          userRaw: 't',
+          expectedRaw: 'True',
+          type: QuestionType.trueFalse,
+        ),
+        isTrue,
+      );
+      expect(
+        AnswerMatcher.isMatch(
+          userRaw: 'Speed->m/s||Acceleration->m/s^2',
+          expectedRaw: 'Acceleration->m/s^2||Speed->m/s',
+          type: QuestionType.matching,
+        ),
+        isTrue,
+      );
+    });
+
+    test('persists dailyQuestionTarget and parses chapterIntro & extended question formats', () {
+      final db = LocalDatabase.inMemory();
+      addTearDown(db.close);
+      final profileRepo = ProfileRepository(db);
+      final initial = profileRepo.loadOrCreateProfile();
+      profileRepo.saveProfile(initial.copyWith(dailyQuestionTarget: 15));
+      expect(profileRepo.loadOrCreateProfile().dailyQuestionTarget, 15);
+
+      final pack = ChapterPack.fromJson(<String, dynamic>{
+        'chapterId': 'phy_9_ch_ext',
+        'programmeId': 'ssc_hssc',
+        'grade': 9,
+        'subjectId': 'phy_9',
+        'chapterNumber': 1,
+        'title': 'Physical Quantities',
+        'packVersion': 1,
+        'estimatedSizeKb': 95,
+        'chapterIntro': 'Introduces SI units and precision instruments.',
+        'prerequisites': ['Basic algebra', 'Metric prefixes'],
+        'learningOutcomes': ['Distinguish base and derived units.'],
+        'concepts': const <Map<String, dynamic>>[],
+        'questions': <Map<String, dynamic>>[
+          <String, dynamic>{
+            'id': 'q_ms_1',
+            'programmeId': 'ssc_hssc',
+            'grade': 9,
+            'subjectId': 'phy_9',
+            'chapterId': 'phy_9_ch_ext',
+            'topicId': 't1',
+            'conceptId': 'c1',
+            'questionType': 'multi_select',
+            'difficulty': 2,
+            'statement': 'Select SI base units:',
+            'options': ['metre', 'newton', 'kilogram'],
+            'multiSelectAnswers': ['metre', 'kilogram'],
+            'correctAnswer': 'metre||kilogram',
+            'explanation': 'Metre and kilogram are base units.',
+            'marks': 2,
+          },
+          <String, dynamic>{
+            'id': 'q_match_1',
+            'programmeId': 'ssc_hssc',
+            'grade': 9,
+            'subjectId': 'phy_9',
+            'chapterId': 'phy_9_ch_ext',
+            'topicId': 't1',
+            'conceptId': 'c1',
+            'questionType': 'matching',
+            'difficulty': 3,
+            'statement': 'Match quantity with SI unit:',
+            'matchingPairs': [
+              {'left': 'Length', 'right': 'm'},
+              {'left': 'Mass', 'right': 'kg'},
+            ],
+            'correctAnswer': 'Length->m||Mass->kg',
+            'explanation': 'SI base units for length and mass.',
+            'marks': 2,
+          },
+        ],
+      });
+
+      expect(pack.chapterIntro, 'Introduces SI units and precision instruments.');
+      expect(pack.prerequisites.length, 2);
+      expect(pack.questions[0].type, QuestionType.multiSelect);
+      expect(pack.questions[0].multiSelectAnswers, ['metre', 'kilogram']);
+      expect(pack.questions[1].matchingPairs.length, 2);
+    });
+
+    testWidgets('MotionSystem renders cleanly under disableAnimations reduced motion',
+        (tester) async {
+      await tester.pumpWidget(
+        const MediaQuery(
+          data: MediaQueryData(disableAnimations: true),
+          child: MaterialApp(
+            home: Scaffold(
+              body: Column(
+                children: [
+                  AnimatedProgressTrack(value: 0.6),
+                  MotionEntrance(child: Text('Reduced motion ready')),
+                  MotionExpandable(
+                    expanded: true,
+                    child: Text('Hint details'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Reduced motion ready'), findsOneWidget);
+      expect(find.text('Hint details'), findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
   });
 }

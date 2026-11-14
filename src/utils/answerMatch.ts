@@ -11,10 +11,27 @@ export function isAnswerMatch(
   expectedRaw: string,
   questionType: QuestionType,
 ): boolean {
+  if (questionType === 'multi_select') {
+    const parseSet = (raw: string) =>
+      raw
+        .split('||')
+        .map((item) => normalizeText(item))
+        .filter(Boolean)
+        .sort();
+    const uSet = parseSet(userRaw);
+    const eSet = parseSet(expectedRaw);
+    return uSet.length > 0 && uSet.length === eSet.length && uSet.every((v, idx) => v === eSet[idx]);
+  }
+
   const user = normalizeText(userRaw);
   const expected = normalizeText(expectedRaw);
   if (!user || !expected) return false;
   if (user === expected) return true;
+
+  if (questionType === 'true_false') {
+    const canon = (v: string) => (v === 't' || v === 'true' ? 'true' : v === 'f' || v === 'false' ? 'false' : v);
+    return canon(user) === canon(expected);
+  }
 
   if (questionType !== 'numerical') {
     return false;

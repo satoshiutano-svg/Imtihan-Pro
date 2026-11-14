@@ -10,6 +10,7 @@ class StudentProfile {
     required this.group,
     this.selectedElectiveIds = const [],
     this.examDateIso,
+    this.dailyQuestionTarget = 10,
     this.onboardingCompleted = false,
   });
 
@@ -19,6 +20,7 @@ class StudentProfile {
   final AcademicGroup group;
   final List<String> selectedElectiveIds;
   final String? examDateIso;
+  final int dailyQuestionTarget;
   final bool onboardingCompleted;
 
   DateTime? get examDate =>
@@ -40,6 +42,7 @@ class StudentProfile {
     List<String>? selectedElectiveIds,
     String? examDateIso,
     bool clearExamDate = false,
+    int? dailyQuestionTarget,
     bool? onboardingCompleted,
   }) {
     return StudentProfile(
@@ -49,6 +52,7 @@ class StudentProfile {
       group: group ?? this.group,
       selectedElectiveIds: selectedElectiveIds ?? this.selectedElectiveIds,
       examDateIso: clearExamDate ? null : (examDateIso ?? this.examDateIso),
+      dailyQuestionTarget: dailyQuestionTarget ?? this.dailyQuestionTarget,
       onboardingCompleted: onboardingCompleted ?? this.onboardingCompleted,
     );
   }

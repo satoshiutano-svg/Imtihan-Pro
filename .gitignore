@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+.roshan_cloud_store.json
+.roshan_storage/
+

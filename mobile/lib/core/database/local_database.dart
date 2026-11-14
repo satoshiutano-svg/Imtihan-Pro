@@ -13,7 +13,7 @@ class LocalDatabase {
 
   final Database db;
 
-  static const int currentSchemaVersion = 2;
+  static const int currentSchemaVersion = 3;
 
   static Future<LocalDatabase> openDefault() async {
     final dir = await getApplicationDocumentsDirectory();
@@ -49,6 +49,7 @@ class LocalDatabase {
           exam_date_iso TEXT,
           theme_mode TEXT NOT NULL DEFAULT 'system',
           reading_scale REAL NOT NULL DEFAULT 1.0,
+          daily_question_target INTEGER NOT NULL DEFAULT 10,
           onboarding_completed INTEGER NOT NULL DEFAULT 0,
           updated_at TEXT NOT NULL
         );
@@ -144,6 +145,17 @@ class LocalDatabase {
           daily_mdcat_done INTEGER NOT NULL DEFAULT 0
         );
       ''');
+    }
+
+    if (existingVersion < 3) {
+      final cols = db.select('PRAGMA table_info(student_profile);');
+      final hasDailyTarget =
+          cols.any((row) => row['name']?.toString() == 'daily_question_target');
+      if (!hasDailyTarget) {
+        db.execute(
+          'ALTER TABLE student_profile ADD COLUMN daily_question_target INTEGER NOT NULL DEFAULT 10;',
+        );
+      }
     }
 
     db.execute('PRAGMA user_version = $currentSchemaVersion;');

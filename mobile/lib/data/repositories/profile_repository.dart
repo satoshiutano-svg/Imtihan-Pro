@@ -46,11 +46,17 @@ class ProfileRepository {
         (g) => g.id == groupId,
         orElse: () => AcademicGroup.sscScience,
       ),
-      selectedElectiveIds: StudentProfile.decodeElectivesJson(
-        row['selected_electives_json'] as String? ?? '[]',
-      ),
+      selectedElectiveIds: selectedElectivesJson(row),
       examDateIso: row['exam_date_iso'] as String?,
+      dailyQuestionTarget:
+          ((row['daily_question_target'] as num?)?.toInt() ?? 10).clamp(5, 50),
       onboardingCompleted: (row['onboarding_completed'] as int? ?? 0) == 1,
+    );
+  }
+
+  static List<String> selectedElectivesJson(Map<String, Object?> row) {
+    return StudentProfile.decodeElectivesJson(
+      row['selected_electives_json'] as String? ?? '[]',
     );
   }
 
@@ -60,14 +66,16 @@ class ProfileRepository {
       '''
       INSERT INTO student_profile (
         id, device_uuid, board_id, grade, group_id,
-        selected_electives_json, exam_date_iso, onboarding_completed, updated_at
-      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+        selected_electives_json, exam_date_iso, daily_question_target,
+        onboarding_completed, updated_at
+      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         board_id = excluded.board_id,
         grade = excluded.grade,
         group_id = excluded.group_id,
         selected_electives_json = excluded.selected_electives_json,
         exam_date_iso = excluded.exam_date_iso,
+        daily_question_target = excluded.daily_question_target,
         onboarding_completed = excluded.onboarding_completed,
         updated_at = excluded.updated_at;
       ''',
@@ -78,6 +86,7 @@ class ProfileRepository {
         profile.group.id,
         profile.encodeElectivesJson(),
         profile.examDateIso,
+        profile.dailyQuestionTarget.clamp(5, 50),
         profile.onboardingCompleted ? 1 : 0,
         now,
       ],

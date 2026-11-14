@@ -4,6 +4,7 @@ import { archiveJsonPackToTelegram } from '../services/telegram_archive';
 import {
   ConceptPayloadSchema,
   QuestionInputSchema,
+  SyncChapterPackSchema,
 } from '../validators/content_schema';
 
 export const adminRoutes = new Hono<{ Bindings: Env }>();
@@ -369,3 +370,376 @@ adminRoutes.post('/chapters/:id/publish', async (c) => {
     telegramArchived: archiveRes.archived,
   });
 });
+
+/**
+ * Unified autonomous pack sync route invoked by Roshan Study Publishing Agent
+ * when CLOUDFLARE_API_URL + CLOUDFLARE_ADMIN_TOKEN are configured.
+ */
+adminRoutes.post('/chapters/sync-pack', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const parsed = SyncChapterPackSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid sync-pack payload', details: parsed.error.flatten() }, 400);
+  }
+
+  const { chapter, reviewedBy, exams } = parsed.data;
+  if (!chapter.permissionVerified) {
+    return c.json({ error: 'Publisher permissionVerified must be true before syncing.' }, 400);
+  }
+
+  const now = new Date().toISOString();
+  const nextVersion = Math.max(1, chapter.packVersion);
+
+  const statements: D1PreparedStatement[] = [
+    c.env.DB.prepare(`
+      INSERT OR IGNORE INTO subjects (id, code, name, medium, text_direction)
+      VALUES (?, ?, ?, 'en', 'ltr')
+    `).bind(
+      chapter.subjectId,
+      chapter.subjectId.toUpperCase().slice(0, 12),
+      chapter.subjectName,
+    ),
+    c.env.DB.prepare(`
+      INSERT INTO chapters (
+        id, subject_id, grade, programme_id, chapter_number, title,
+        learning_outcomes_json, publication_status, current_pack_version, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        subject_id = excluded.subject_id,
+        grade = excluded.grade,
+        programme_id = excluded.programme_id,
+        chapter_number = excluded.chapter_number,
+        title = excluded.title,
+        learning_outcomes_json = excluded.learning_outcomes_json,
+        publication_status = 'published',
+        current_pack_version = excluded.current_pack_version,
+        updated_at = excluded.updated_at
+    `).bind(
+      chapter.chapterId,
+      chapter.subjectId,
+      chapter.grade,
+      chapter.programmeId,
+      chapter.chapterNumber,
+      chapter.title,
+      JSON.stringify(chapter.learningOutcomes),
+      nextVersion,
+      now,
+    ),
+  ];
+
+  const seenTopics = new Set<string>();
+  for (let i = 0; i < chapter.concepts.length; i++) {
+    const rawConcept = chapter.concepts[i] as Record<string, unknown>;
+    const conceptId = String(rawConcept.id ?? `${chapter.chapterId}_c${i + 1}`);
+    const topicId = String(rawConcept.topicId ?? `${chapter.chapterId}_t1`);
+    const title = String(rawConcept.title ?? `Concept ${i + 1}`);
+    const sourceBook = String(rawConcept.sourceBook ?? `KPECTB ${chapter.subjectName}`);
+    const sourcePage = String(rawConcept.sourcePage ?? `Ch. ${chapter.chapterNumber}`);
+    const locale = rawConcept.locale === 'ur' ? 'ur' : 'en';
+    const textDirection = rawConcept.textDirection === 'rtl' ? 'rtl' : 'ltr';
+
+    if (!seenTopics.has(topicId)) {
+      seenTopics.add(topicId);
+      statements.push(
+        c.env.DB.prepare(`
+          INSERT OR IGNORE INTO topics (id, chapter_id, order_index, title)
+          VALUES (?, ?, ?, ?)
+        `).bind(topicId, chapter.chapterId, seenTopics.size, title),
+      );
+    }
+
+    statements.push(
+      c.env.DB.prepare(`
+        INSERT INTO concepts (
+          id, chapter_id, topic_id, order_index, title, locale, text_direction,
+          payload_json, source_book, source_edition, source_page,
+          review_status, reviewed_by, reviewed_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, 'published', ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          title = excluded.title,
+          payload_json = excluded.payload_json,
+          review_status = 'published',
+          reviewed_by = excluded.reviewed_by,
+          reviewed_at = excluded.reviewed_at,
+          updated_at = excluded.updated_at
+      `).bind(
+        conceptId,
+        chapter.chapterId,
+        topicId,
+        Number(rawConcept.orderIndex ?? i + 1),
+        title,
+        locale,
+        textDirection,
+        JSON.stringify(rawConcept),
+        sourceBook,
+        sourcePage,
+        reviewedBy,
+        now,
+        now,
+      ),
+    );
+  }
+
+  for (let i = 0; i < chapter.questions.length; i++) {
+    const rawQ = chapter.questions[i] as Record<string, unknown>;
+    const qId = String(rawQ.id ?? `${chapter.chapterId}_q${i + 1}`);
+    const topicId = String(rawQ.topicId ?? `${chapter.chapterId}_t1`);
+    if (!seenTopics.has(topicId)) {
+      seenTopics.add(topicId);
+      statements.push(
+        c.env.DB.prepare(`
+          INSERT OR IGNORE INTO topics (id, chapter_id, order_index, title)
+          VALUES (?, ?, ?, ?)
+        `).bind(topicId, chapter.chapterId, seenTopics.size, chapter.title),
+      );
+    }
+
+    statements.push(
+      c.env.DB.prepare(`
+        INSERT INTO questions (
+          id, programme_id, grade, group_id, subject_id, chapter_id, topic_id,
+          concept_id, question_type, difficulty, statement, locale, text_direction,
+          payload_json, answer_json, explanation, marks, source_type,
+          source_board_id, source_year, source_paper_ref, source_page_ref,
+          publication_status, reviewed_by, reviewed_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'en', 'ltr', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          statement = excluded.statement,
+          payload_json = excluded.payload_json,
+          answer_json = excluded.answer_json,
+          explanation = excluded.explanation,
+          publication_status = 'published',
+          reviewed_by = excluded.reviewed_by,
+          reviewed_at = excluded.reviewed_at,
+          updated_at = excluded.updated_at
+      `).bind(
+        qId,
+        chapter.programmeId,
+        chapter.grade,
+        chapter.groupId,
+        chapter.subjectId,
+        chapter.chapterId,
+        topicId,
+        rawQ.conceptId ? String(rawQ.conceptId) : null,
+        String(rawQ.questionType ?? 'mcq'),
+        Number(rawQ.difficulty ?? 2),
+        String(rawQ.statement ?? ''),
+        JSON.stringify({
+          options: rawQ.options ?? [],
+          optionMisconceptions: rawQ.optionMisconceptions ?? {},
+          hints: rawQ.hints ?? [],
+          numericalSteps: rawQ.numericalSteps ?? null,
+          markingPoints: rawQ.markingPoints ?? [],
+        }),
+        JSON.stringify({ correctAnswer: rawQ.correctAnswer ?? '' }),
+        String(rawQ.explanation ?? ''),
+        Number(rawQ.marks ?? 1),
+        String(rawQ.sourceType ?? 'practice_original'),
+        rawQ.sourceBoardId ? String(rawQ.sourceBoardId) : null,
+        rawQ.sourceYear ? Number(rawQ.sourceYear) : null,
+        rawQ.sourcePaperRef ? String(rawQ.sourcePaperRef) : null,
+        rawQ.sourcePageRef ? String(rawQ.sourcePageRef) : null,
+        reviewedBy,
+        now,
+        now,
+      ),
+    );
+  }
+
+  for (const exam of exams) {
+    statements.push(
+      c.env.DB.prepare(`
+        INSERT INTO exam_blueprints (
+          id, programme_id, grade, group_id, subject_id, chapter_id, title,
+          exam_kind, duration_minutes, total_marks, sections_json,
+          publication_status, review_stage, pack_version, reviewed_by,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', 'published', ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          title = excluded.title,
+          sections_json = excluded.sections_json,
+          publication_status = 'published',
+          review_stage = 'published',
+          pack_version = excluded.pack_version,
+          reviewed_by = excluded.reviewed_by,
+          updated_at = excluded.updated_at
+      `).bind(
+        exam.id,
+        exam.programmeId,
+        exam.grade,
+        exam.groupId,
+        exam.subjectId,
+        exam.chapterId ?? chapter.chapterId,
+        exam.title,
+        exam.examKind,
+        exam.durationMinutes,
+        exam.totalMarks,
+        JSON.stringify(exam.sections),
+        exam.packVersion,
+        reviewedBy,
+        now,
+        now,
+      ),
+    );
+  }
+
+  const packObject = {
+    schemaVersion: 1,
+    chapterId: chapter.chapterId,
+    packVersion: nextVersion,
+    publishedAt: now,
+    chapter,
+    concepts: chapter.concepts,
+    questions: chapter.questions,
+    exams,
+  };
+  const jsonContent = JSON.stringify(packObject);
+  const digestBuffer = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(jsonContent),
+  );
+  const checksumSha256 = Array.from(new Uint8Array(digestBuffer))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+
+  const r2Key = `packs/${chapter.chapterId}/v${nextVersion}.json`;
+  await c.env.CONTENT_BUCKET.put(r2Key, jsonContent, {
+    httpMetadata: { contentType: 'application/json; charset=utf-8' },
+  });
+
+  statements.push(
+    c.env.DB.prepare(`
+      INSERT INTO chapter_packs (
+        id, chapter_id, version, r2_key, checksum_sha256, size_bytes, telegram_message_id, published_at
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+      ON CONFLICT(chapter_id, version) DO UPDATE SET
+        r2_key = excluded.r2_key,
+        checksum_sha256 = excluded.checksum_sha256,
+        size_bytes = excluded.size_bytes,
+        published_at = excluded.published_at
+    `).bind(
+      `${chapter.chapterId}_v${nextVersion}`,
+      chapter.chapterId,
+      nextVersion,
+      r2Key,
+      checksumSha256,
+      jsonContent.length,
+      now,
+    ),
+  );
+
+  await c.env.DB.batch(statements);
+
+  if (c.env.CATALOG_KV) {
+    await Promise.all([
+      c.env.CATALOG_KV.delete(`catalog:${chapter.programmeId}:all:all`),
+      c.env.CATALOG_KV.delete(`catalog:${chapter.programmeId}:${chapter.grade}:all`),
+      c.env.CATALOG_KV.delete(`catalog:${chapter.programmeId}:all:${chapter.subjectId}`),
+      c.env.CATALOG_KV.delete(`catalog:${chapter.programmeId}:${chapter.grade}:${chapter.subjectId}`),
+    ]);
+  }
+
+  return c.json({
+    ok: true,
+    chapterId: chapter.chapterId,
+    packVersion: nextVersion,
+    r2Key,
+    checksumSha256,
+    syncedAt: now,
+  });
+});
+
+adminRoutes.post('/books/sync', async (c) => {
+  const body = (await c.req.json().catch(() => null)) as {
+    book?: Record<string, unknown>;
+    pdfBase64?: string;
+  } | null;
+  if (!body?.book || !body.pdfBase64) {
+    return c.json({ error: 'Provide book metadata and pdfBase64.' }, 400);
+  }
+  const book = body.book;
+  const bookId = String(book.id ?? '').trim();
+  const version = Math.max(1, Number(book.version ?? 1));
+  if (!bookId) {
+    return c.json({ error: 'Book id is required.' }, 400);
+  }
+
+  const binary = Uint8Array.from(atob(body.pdfBase64), (ch) => ch.charCodeAt(0));
+  const r2Key = `books/${bookId}/v${version}.pdf`;
+  await c.env.CONTENT_BUCKET.put(r2Key, binary, {
+    httpMetadata: { contentType: 'application/pdf' },
+  });
+
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(`
+    INSERT INTO books (
+      id, title, programme_id, grade, group_id, subject_id, subject_name,
+      curriculum, source_book, version, sha256, file_size_bytes, page_count,
+      filename, r2_key, extracted_text, page_texts_json, metadata_json,
+      publication_status, is_student_visible, permission_verified, uploaded_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      version = excluded.version,
+      sha256 = excluded.sha256,
+      r2_key = excluded.r2_key,
+      extracted_text = excluded.extracted_text,
+      page_texts_json = excluded.page_texts_json,
+      is_student_visible = excluded.is_student_visible,
+      updated_at = excluded.updated_at
+  `)
+    .bind(
+      bookId,
+      String(book.title ?? 'Textbook PDF'),
+      String(book.programmeId ?? 'ssc_hssc'),
+      Number(book.grade ?? 9),
+      String(book.groupId ?? 'ssc_science'),
+      String(book.subjectId ?? 'subject_9'),
+      String(book.subjectName ?? 'Science'),
+      String(book.curriculum ?? 'KPK BISE'),
+      String(book.sourceBook ?? 'KPECTB Textbook'),
+      version,
+      String(book.sha256 ?? ''),
+      Number(book.fileSizeBytes ?? binary.byteLength),
+      Number(book.pageCount ?? 1),
+      String(book.filename ?? `${bookId}.pdf`),
+      r2Key,
+      String(book.extractedText ?? ''),
+      JSON.stringify(book.pageTexts ?? []),
+      JSON.stringify(book.metadata ?? {}),
+      String(book.publicationStatus ?? 'published'),
+      book.isStudentVisible === false ? 0 : 1,
+      book.permissionVerified === false ? 0 : 1,
+      String(book.uploadedAt ?? now),
+      now,
+    )
+    .run();
+
+  return c.json({ ok: true, r2Key, syncedAt: now });
+});
+
+adminRoutes.post('/chapters/:id/rollback', async (c) => {
+  const chapterId = c.req.param('id');
+  const body = (await c.req.json().catch(() => null)) as { targetVersion?: number } | null;
+  const targetVersion = Number(body?.targetVersion);
+  if (!Number.isFinite(targetVersion) || targetVersion < 1) {
+    return c.json({ error: 'Provide valid targetVersion >= 1.' }, 400);
+  }
+  const targetPack = await c.env.DB.prepare(
+    `SELECT * FROM chapter_packs WHERE chapter_id = ? AND version = ?`,
+  )
+    .bind(chapterId, targetVersion)
+    .first<{ r2_key: string; checksum_sha256: string }>();
+
+  if (!targetPack) {
+    return c.json({ error: `Pack version ${targetVersion} not found.` }, 404);
+  }
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(
+    `UPDATE chapters SET current_pack_version = ?, publication_status = 'published', updated_at = ? WHERE id = ?`,
+  )
+    .bind(targetVersion, now, chapterId)
+    .run();
+
+  return c.json({ ok: true, chapterId, restoredVersion: targetVersion, r2Key: targetPack.r2_key });
+});
+

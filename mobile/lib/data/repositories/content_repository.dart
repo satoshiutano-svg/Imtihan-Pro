@@ -52,27 +52,83 @@ class ContentRepository {
 
   final LocalDatabase _db;
 
+  List<ChapterPack> _loadDownloadedFullPacks() {
+    final rows = _db.db.select(
+      'SELECT pack_json FROM downloaded_chapters ORDER BY downloaded_at DESC;',
+    );
+    final result = <ChapterPack>[];
+    for (final row in rows) {
+      final raw = row['pack_json'] as String?;
+      if (raw == null || raw.isEmpty) continue;
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map<String, dynamic> &&
+            decoded['title'] is String &&
+            (decoded['title'] as String).isNotEmpty &&
+            decoded['concepts'] is List) {
+          result.add(ChapterPack.fromJson(decoded));
+        }
+      } catch (_) {
+        // Ignore lightweight metadata stubs stored solely for checksum verification.
+      }
+    }
+    return result;
+  }
+
+  /// Returns all available chapters (downloaded cloud updates override bundled starters).
+  List<ChapterPack> listAllPacks() {
+    final mergedById = <String, ChapterPack>{};
+    for (final starter in StarterPacksSeed.starterPacks) {
+      mergedById[starter.chapterId] = starter;
+    }
+    for (final downloaded in _loadDownloadedFullPacks()) {
+      mergedById[downloaded.chapterId] = downloaded;
+    }
+    final list = mergedById.values.toList(growable: false)
+      ..sort((a, b) {
+        final gCmp = a.grade.compareTo(b.grade);
+        if (gCmp != 0) return gCmp;
+        return a.chapterNumber.compareTo(b.chapterNumber);
+      });
+    return list;
+  }
+
+  List<ChapterPack> searchPacks({
+    required ProgrammeId programmeId,
+    String query = '',
+    int? grade,
+  }) {
+    final normalized = query.trim().toLowerCase();
+    return listAllPacks().where((p) {
+      if (p.programmeId != programmeId) return false;
+      if (grade != null && p.grade != grade) return false;
+      if (normalized.isEmpty) return true;
+      final hay = '${p.title} ${p.subjectName ?? ''} ${p.subjectId} ${p.concepts.map((c) => c.title).join(' ')}'.toLowerCase();
+      return hay.contains(normalized);
+    }).toList(growable: false);
+  }
+
   List<ChapterPack> getPacksForProgramme(ProgrammeId programmeId) {
-    return StarterPacksSeed.starterPacks
+    return listAllPacks()
         .where((p) => p.programmeId == programmeId)
         .toList(growable: false);
   }
 
   List<ChapterPack> getPacksForSubject(String subjectId) {
-    return StarterPacksSeed.starterPacks
+    return listAllPacks()
         .where((p) => p.subjectId == subjectId)
         .toList(growable: false);
   }
 
   ChapterPack? getPackById(String chapterId) {
-    for (final pack in StarterPacksSeed.starterPacks) {
+    for (final pack in listAllPacks()) {
       if (pack.chapterId == chapterId) return pack;
     }
     return null;
   }
 
   ConceptItem? getConceptById(String conceptId) {
-    for (final pack in StarterPacksSeed.starterPacks) {
+    for (final pack in listAllPacks()) {
       for (final concept in pack.concepts) {
         if (concept.id == conceptId) return concept;
       }
@@ -81,7 +137,7 @@ class ContentRepository {
   }
 
   QuestionItem? getQuestionById(String questionId) {
-    for (final pack in StarterPacksSeed.starterPacks) {
+    for (final pack in listAllPacks()) {
       for (final q in pack.questions) {
         if (q.id == questionId) return q;
       }
@@ -97,7 +153,7 @@ class ContentRepository {
     int? maxDifficulty,
   }) {
     final results = <QuestionItem>[];
-    for (final pack in StarterPacksSeed.starterPacks) {
+    for (final pack in listAllPacks()) {
       if (pack.programmeId != programmeId) continue;
       if (subjectId != null && pack.subjectId != subjectId) continue;
       if (chapterId != null && pack.chapterId != chapterId) continue;

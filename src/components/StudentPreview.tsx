@@ -1,16 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  Award,
+  Bookmark,
   BookOpen,
   CheckCircle2,
+  Clock,
+  Compass,
   ExternalLink,
   Flame,
-  Lightbulb,
+  GraduationCap,
+  Layers,
   MessageCircle,
   PlayCircle,
   RotateCcw,
-  ShieldAlert,
+  Search,
   ShieldCheck,
-  Sparkles,
+  Target,
+  User,
   Volume2,
   XCircle,
 } from 'lucide-react';
@@ -23,26 +29,77 @@ import type {
   CmsChapter,
   CmsQuestion,
   DailyGoalState,
+  ExamBlueprint,
+  ExamScoreResponse,
+  ProgrammeId,
   SandboxAttemptRecord,
 } from '../types/cms';
+import { isAnswerMatch } from '../utils/answerMatch';
+import { MathGraphView } from './MathGraphView';
+import { MathText } from './MathText';
+import { MotionGraphicPlayer } from './MotionGraphicPlayer';
+import {
+  MotionProgressTrack,
+  MotionReveal,
+  MotionScreenSwap,
+} from './MotionSystem';
+import { PdfBookLibrary } from './PdfBookLibrary';
+import { StudentPracticeRunner } from './StudentPracticeRunner';
 import {
   WhatsAppShareModal,
   type ShareCardPayload,
 } from './WhatsAppShareModal';
-import { isAnswerMatch } from '../utils/answerMatch';
 
 interface StudentPreviewProps {
   chapters: CmsChapter[];
+  attempts?: SandboxAttemptRecord[];
   onRecordAttempt: (attempt: SandboxAttemptRecord) => void;
+  onClearAttempts?: () => void;
+}
+
+type StudentSection =
+  | 'home'
+  | 'learn'
+  | 'practice'
+  | 'preparation'
+  | 'exams'
+  | 'books'
+  | 'profile';
+
+interface LocalStudentPrefs {
+  board: string;
+  targetGrade: 9 | 10 | 11 | 12;
+  programmeTrack: ProgrammeId;
+  lastChapterId: string;
+  completedConceptIds: string[];
+  bookmarkedChapterIds: string[];
+  prepChecklist: Record<string, boolean>;
+  onboardingCompleted?: boolean;
+  selectedSubjects?: string[];
+}
+
+interface PersistedExamState {
+  examId: string;
+  submissionUuid?: string;
+  started: boolean;
+  finished: boolean;
+  timed: boolean;
+  secondsLeft: number;
+  answers: Record<string, string>;
+  subjectiveChecked: Record<string, boolean>;
+  scoreResult?: ExamScoreResponse | null;
 }
 
 const STORAGE_DAILY_GOAL_KEY = 'roshan_study_daily_goal_v1';
+const STORAGE_PREFS_KEY = 'roshan_study_student_prefs_v1';
+const STORAGE_ACTIVE_EXAM_KEY = 'roshan_study_active_exam_v1';
 
-const MATCH_PAIRS = [
-  { id: 'speed', left: 'Speed (v)', right: 'm/s (Scalar)' },
-  { id: 'accel', left: 'Acceleration (a)', right: '(vf - vi) / t (m/s²)' },
-  { id: 'kc', left: 'Equilibrium (Kc)', right: '[Products] / [Reactants]' },
-  { id: 'coulomb', left: 'Coulomb Force', right: 'k·q₁q₂ / r² (N)' },
+const BOARD_PREP_CHECKLIST = [
+  'Read chapter Learning Objectives & Textbook Concept Notes',
+  'Study Motion Graphics & Graphs to visualize key laws',
+  'Practise all MCQs and review misconception explanations',
+  'Solve numericals using all 6 KPK Board steps with SI units',
+  'Attempt at least 1 timed Section A/B/C Exam Paper',
 ];
 
 function localDateIso(d = new Date()): string {
@@ -78,7 +135,6 @@ function loadInitialDailyGoal(): DailyGoalState {
     const saved = JSON.parse(raw) as DailyGoalState;
     if (!saved || saved.todayDateIso === today) return { ...fallback, ...saved };
 
-    // Roll over to a new calendar day with forgiving grace freezes (load-shedding/exam protection)
     const gap = saved.lastActiveDateIso ? dayDiff(saved.lastActiveDateIso, today) : 0;
     let nextStreak = saved.currentStreakDays;
     let nextFreezes = saved.graceFreezesRemaining;
@@ -107,64 +163,217 @@ function loadInitialDailyGoal(): DailyGoalState {
   }
 }
 
-export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProps) {
-  const [board, setBoard] = useState<string>(KPK_BOARDS[0]);
-  const [selectedChapterId, setSelectedChapterId] = useState<string>(
-    chapters[0]?.chapterId ?? '',
-  );
-  const [mode, setMode] = useState<'learn' | 'practice' | 'daily10' | 'pastpapers' | 'match'>(
-    'learn',
-  );
-  const [guidedMode, setGuidedMode] = useState<boolean>(true);
-  const [microStep, setMicroStep] = useState<number>(0);
-  const [microChoice, setMicroChoice] = useState<string | null>(null);
-  const [activeUrduIdx, setActiveUrduIdx] = useState<number | null>(null);
-  const [showAdPreview, setShowAdPreview] = useState<boolean>(true);
-  const [showPostSessionAd, setShowPostSessionAd] = useState<boolean>(false);
+function loadInitialPrefs(defaultChapterId: string): LocalStudentPrefs {
+  const fallback: LocalStudentPrefs = {
+    board: KPK_BOARDS[0],
+    targetGrade: 9,
+    programmeTrack: 'ssc_hssc',
+    lastChapterId: defaultChapterId,
+    completedConceptIds: [],
+    bookmarkedChapterIds: [],
+    prepChecklist: {},
+  };
+  try {
+    const raw = localStorage.getItem(STORAGE_PREFS_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<LocalStudentPrefs>;
+    return {
+      ...fallback,
+      ...parsed,
+      completedConceptIds: Array.isArray(parsed.completedConceptIds)
+        ? parsed.completedConceptIds
+        : [],
+      bookmarkedChapterIds: Array.isArray(parsed.bookmarkedChapterIds)
+        ? parsed.bookmarkedChapterIds
+        : [],
+      prepChecklist: parsed.prepChecklist ?? {},
+    };
+  } catch {
+    return fallback;
+  }
+}
 
-  // 5-Minute Duolingo-Style Streak & Daily Goal state
+function loadPersistedExam(): PersistedExamState | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_ACTIVE_EXAM_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as PersistedExamState;
+  } catch {
+    return null;
+  }
+}
+
+export function StudentPreview({
+  chapters,
+  attempts = [],
+  onRecordAttempt,
+  onClearAttempts,
+}: StudentPreviewProps) {
+  const [section, setSection] = useState<StudentSection>('home');
+  const [prefs, setPrefs] = useState<LocalStudentPrefs>(() =>
+    loadInitialPrefs(chapters[0]?.chapterId ?? ''),
+  );
   const [dailyGoal, setDailyGoal] = useState<DailyGoalState>(loadInitialDailyGoal);
-
-  // Share Card Modal
   const [shareCard, setShareCard] = useState<ShareCardPayload | null>(null);
 
-  // Practice engine state
-  const [qIndex, setQIndex] = useState<number>(0);
-  const [hintsShown, setHintsShown] = useState<number>(0);
-  const [selectedOption, setSelectedOption] = useState<string>('');
-  const [typedAnswer, setTypedAnswer] = useState<string>('');
-  const [practiceError, setPracticeError] = useState<string>('');
-  const [submitted, setSubmitted] = useState<boolean>(false);
-  const [isCorrect, setIsCorrect] = useState<boolean>(false);
-  const [checkedPoints, setCheckedPoints] = useState<number[]>([]);
+  // Learn / Hierarchy explorer state
+  const [catalogSearch, setCatalogSearch] = useState('');
+  const [catalogGrade, setCatalogGrade] = useState<string>('ALL');
+  const [catalogGroup, setCatalogGroup] = useState<string>('ALL');
+  const [catalogSubject, setCatalogSubject] = useState<string>('ALL');
+  const [catalogPage, setCatalogPage] = useState(1);
+  const [selectedChapterId, setSelectedChapterId] = useState<string>(
+    prefs.lastChapterId || chapters[0]?.chapterId || '',
+  );
+  const [selectedConceptIdx, setSelectedConceptIdx] = useState(0);
+  const [guidedMode, setGuidedMode] = useState(true);
+  const [microStep, setMicroStep] = useState(0);
+  const [microChoice, setMicroChoice] = useState<string | null>(null);
+  const [activeUrduIdx, setActiveUrduIdx] = useState<number | null>(null);
+  const [flashcardIdx, setFlashcardIdx] = useState(0);
+  const [flashcardFlipped, setFlashcardFlipped] = useState(false);
 
-  // Daily 10-MCQ Challenge state (isolated Board vs MDCAT)
-  const [challengeTrack, setChallengeTrack] = useState<'board' | 'mdcat'>('board');
-  const [challengeIdx, setChallengeIdx] = useState<number>(0);
-  const [challengeSelected, setChallengeSelected] = useState<string>('');
-  const [challengeSubmitted, setChallengeSubmitted] = useState<boolean>(false);
-  const [challengeScore, setChallengeScore] = useState<number>(0);
-  const [challengeFinished, setChallengeFinished] = useState<boolean>(false);
+  // Practice filter state
+  const [practiceTypeFilter, setPracticeTypeFilter] = useState<string>('ALL');
+  const [practiceSessionDone, setPracticeSessionDone] = useState(false);
 
-  // Past Paper Browser filters
+  // Preparation: Daily 10-MCQ & Past Papers
+  const [prepSubTab, setPrepSubTab] = useState<'overview' | 'daily10' | 'pastpapers'>(
+    'overview',
+  );
+  const [challengeIdx, setChallengeIdx] = useState(0);
+  const [challengeSelected, setChallengeSelected] = useState('');
+  const [challengeSubmitted, setChallengeSubmitted] = useState(false);
+  const [challengeScore, setChallengeScore] = useState(0);
+  const [challengeFinished, setChallengeFinished] = useState(false);
+
   const [ppBoardFilter, setPpBoardFilter] = useState<string>('ALL');
   const [ppGradeFilter, setPpGradeFilter] = useState<string>('ALL');
   const [ppSubjectFilter, setPpSubjectFilter] = useState<string>('ALL');
   const [ppTypeFilter, setPpTypeFilter] = useState<string>('ALL');
+  const [ppVerifiedOnly, setPpVerifiedOnly] = useState<boolean>(false);
   const [expandedPaperId, setExpandedPaperId] = useState<string | null>(null);
 
-  // Formula Match state
-  const [matchLeft, setMatchLeft] = useState<string | null>(null);
-  const [matchedIds, setMatchedIds] = useState<string[]>([]);
-  const [matchFeedback, setMatchFeedback] = useState<string>('');
+  // Exams engine state (persisted in localStorage)
+  const initialSavedExam = useMemo(loadPersistedExam, []);
+  const [publishedExams, setPublishedExams] = useState<ExamBlueprint[]>([]);
+  const [selectedExamId, setSelectedExamId] = useState<string>(
+    initialSavedExam?.examId ?? '',
+  );
+  const [examStarted, setExamStarted] = useState<boolean>(
+    initialSavedExam?.started ?? false,
+  );
+  const [examFinished, setExamFinished] = useState<boolean>(
+    initialSavedExam?.finished ?? false,
+  );
+  const [examTimed, setExamTimed] = useState<boolean>(
+    initialSavedExam?.timed ?? true,
+  );
+  const [examSecondsLeft, setExamSecondsLeft] = useState<number>(
+    initialSavedExam?.secondsLeft ?? 1500,
+  );
+  const [examAnswers, setExamAnswers] = useState<Record<string, string>>(
+    initialSavedExam?.answers ?? {},
+  );
+  const [examSubjectiveChecked, setExamSubjectiveChecked] = useState<
+    Record<string, boolean>
+  >(initialSavedExam?.subjectiveChecked ?? {});
+  const [examSubmissionUuid, setExamSubmissionUuid] = useState<string>(
+    initialSavedExam?.submissionUuid || `sub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+  );
+  const [examScoreResult, setExamScoreResult] = useState<ExamScoreResponse | null>(
+    initialSavedExam?.scoreResult ?? null,
+  );
+  const [examScoringLoading, setExamScoringLoading] = useState(false);
+  const [examScoringError, setExamScoringError] = useState('');
+  const [completedExamsCount, setCompletedExamsCount] = useState(0);
+  const [onboardingStep, setOnboardingStep] = useState<number>(0);
+  const [showOnboardingBanner, setShowOnboardingBanner] = useState<boolean>(
+    () => !prefs.onboardingCompleted,
+  );
 
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_DAILY_GOAL_KEY, JSON.stringify(dailyGoal));
     } catch {
-      // ignore storage quota errors
+      // ignore
     }
   }, [dailyGoal]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_PREFS_KEY, JSON.stringify(prefs));
+    } catch {
+      // ignore
+    }
+  }, [prefs]);
+
+  useEffect(() => {
+    try {
+      if (!selectedExamId) return;
+      const state: PersistedExamState = {
+        examId: selectedExamId,
+        submissionUuid: examSubmissionUuid,
+        started: examStarted,
+        finished: examFinished,
+        timed: examTimed,
+        secondsLeft: examSecondsLeft,
+        answers: examAnswers,
+        subjectiveChecked: examSubjectiveChecked,
+        scoreResult: examScoreResult,
+      };
+      localStorage.setItem(STORAGE_ACTIVE_EXAM_KEY, JSON.stringify(state));
+    } catch {
+      // ignore
+    }
+  }, [
+    selectedExamId,
+    examSubmissionUuid,
+    examStarted,
+    examFinished,
+    examTimed,
+    examSecondsLeft,
+    examAnswers,
+    examSubjectiveChecked,
+    examScoreResult,
+  ]);
+
+  useEffect(() => {
+    let active = true;
+    const loadExams = async () => {
+      try {
+        const res = await fetch(
+          `/api/v1/exams?programme=${encodeURIComponent(prefs.programmeTrack)}`,
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as { exams?: ExamBlueprint[] };
+        if (active && Array.isArray(data.exams)) {
+          setPublishedExams(data.exams);
+        }
+      } catch {
+        // Offline / fallback handled below
+      }
+    };
+    void loadExams();
+    return () => {
+      active = false;
+    };
+  }, [chapters.length, prefs.programmeTrack]);
+
+  useEffect(() => {
+    if (section !== 'exams' || !examStarted || examFinished || !examTimed) return;
+    const timer = window.setInterval(() => {
+      setExamSecondsLeft((sec) => {
+        if (sec <= 1) {
+          setExamFinished(true);
+          setCompletedExamsCount((c) => c + 1);
+          return 0;
+        }
+        return sec - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [section, examStarted, examFinished, examTimed]);
 
   const bumpDailyGoalProgress = (addQuestions: number, addLessons: number) => {
     const today = localDateIso();
@@ -193,21 +402,432 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
     });
   };
 
-  const chapter = useMemo(
-    () => chapters.find((c) => c.chapterId === selectedChapterId) ?? chapters[0],
-    [chapters, selectedChapterId],
+  // Strict Track Isolation: SSC/HSSC chapters vs Admission track chapters
+  const trackChapters = useMemo(() => {
+    const matching = chapters.filter((c) => c.programmeId === prefs.programmeTrack);
+    return matching.length > 0 ? matching : chapters.filter((c) => c.programmeId === 'ssc_hssc');
+  }, [chapters, prefs.programmeTrack]);
+
+  const trackAttempts = useMemo(
+    () =>
+      attempts.filter((a) =>
+        prefs.programmeTrack === 'ssc_hssc'
+          ? !a.programmeId || a.programmeId === 'ssc_hssc'
+          : a.programmeId === prefs.programmeTrack,
+      ),
+    [attempts, prefs.programmeTrack],
   );
 
-  const concept = chapter?.concepts[0];
-  const questions = chapter?.questions ?? [];
-  const currentQ: CmsQuestion | undefined = questions[qIndex];
+  const dynamicCatalogGroups = useMemo(
+    () => Array.from(new Set(trackChapters.map((c) => c.groupId))).sort(),
+    [trackChapters],
+  );
 
-  // Daily 10-MCQ queues (strictly isolating MDCAT from SSC/HSSC board pool)
+  const dynamicCatalogSubjects = useMemo(
+    () => Array.from(new Set(trackChapters.map((c) => c.subjectName))).sort(),
+    [trackChapters],
+  );
+
+  const filteredCatalogChapters = useMemo(() => {
+    const q = catalogSearch.trim().toLowerCase();
+    return trackChapters.filter((ch) => {
+      if (catalogGrade !== 'ALL' && ch.grade !== Number(catalogGrade)) return false;
+      if (catalogGroup !== 'ALL' && ch.groupId !== catalogGroup) return false;
+      if (catalogSubject !== 'ALL' && ch.subjectName !== catalogSubject) return false;
+      if (q) {
+        const hay = `${ch.title} ${ch.subjectName} ${ch.grade} ${ch.learningOutcomes.join(' ')}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [trackChapters, catalogSearch, catalogGrade, catalogGroup, catalogSubject]);
+
+  const CATALOG_PAGE_SIZE = 12;
+  const totalCatalogPages = Math.max(
+    1,
+    Math.ceil(filteredCatalogChapters.length / CATALOG_PAGE_SIZE),
+  );
+  const safeCatalogPage = Math.min(catalogPage, totalCatalogPages);
+  const pagedCatalogChapters = useMemo(() => {
+    const start = (safeCatalogPage - 1) * CATALOG_PAGE_SIZE;
+    return filteredCatalogChapters.slice(start, start + CATALOG_PAGE_SIZE);
+  }, [filteredCatalogChapters, safeCatalogPage]);
+
+  const chapter = useMemo(
+    () =>
+      filteredCatalogChapters.find((c) => c.chapterId === selectedChapterId) ??
+      trackChapters.find((c) => c.chapterId === selectedChapterId) ??
+      filteredCatalogChapters[0] ??
+      trackChapters[0],
+    [trackChapters, filteredCatalogChapters, selectedChapterId],
+  );
+
+  const concepts = chapter?.concepts ?? [];
+  const safeConceptIdx =
+    concepts.length > 0 ? Math.min(selectedConceptIdx, concepts.length - 1) : 0;
+  const concept = concepts[safeConceptIdx];
+
+  const practiceQuestions = useMemo(() => {
+    if (!chapter) return [];
+    if (practiceTypeFilter === 'ALL') return chapter.questions;
+    return chapter.questions.filter((q) => q.questionType === practiceTypeFilter);
+  }, [chapter, practiceTypeFilter]);
+
+  const handleSelectChapter = (id: string, targetSection?: StudentSection) => {
+    setSelectedChapterId(id);
+    setSelectedConceptIdx(0);
+    setMicroStep(0);
+    setMicroChoice(null);
+    setActiveUrduIdx(null);
+    setFlashcardIdx(0);
+    setFlashcardFlipped(false);
+    setPracticeSessionDone(false);
+    setPrefs((prev) => ({ ...prev, lastChapterId: id }));
+    if (targetSection) setSection(targetSection);
+  };
+
+  const toggleChapterBookmark = (chapterId: string) => {
+    setPrefs((prev) => {
+      const exists = prev.bookmarkedChapterIds.includes(chapterId);
+      return {
+        ...prev,
+        bookmarkedChapterIds: exists
+          ? prev.bookmarkedChapterIds.filter((id) => id !== chapterId)
+          : [...prev.bookmarkedChapterIds, chapterId],
+      };
+    });
+  };
+
+  const markConceptCompleted = (conceptId: string) => {
+    setPrefs((prev) =>
+      prev.completedConceptIds.includes(conceptId)
+        ? prev
+        : { ...prev, completedConceptIds: [...prev.completedConceptIds, conceptId] },
+    );
+  };
+
+  // Real Weak Areas computed strictly from actual attempt history
+  const weakAreas = useMemo(() => {
+    const byChapter = new Map<
+      string,
+      { chapterId: string; subjectName: string; total: number; wrong: number }
+    >();
+    for (const att of trackAttempts) {
+      const cur = byChapter.get(att.chapterId) ?? {
+        chapterId: att.chapterId,
+        subjectName: att.subjectName,
+        total: 0,
+        wrong: 0,
+      };
+      cur.total += 1;
+      if (!att.isCorrect) cur.wrong += 1;
+      byChapter.set(att.chapterId, cur);
+    }
+    return Array.from(byChapter.values())
+      .filter((entry) => entry.wrong > 0)
+      .sort((a, b) => b.wrong / b.total - a.wrong / a.total)
+      .slice(0, 4);
+  }, [trackAttempts]);
+
+  // Evidence-Based Readiness Metrics (no fake predictions!)
+  const readinessMetrics = useMemo(() => {
+    const publishedTrackChapters = trackChapters.filter(
+      (c) => c.publicationStatus === 'published',
+    );
+    const totalTrackConcepts = trackChapters.reduce((sum, c) => sum + c.concepts.length, 0);
+    const studiedConceptsCount = trackChapters.reduce(
+      (sum, c) =>
+        sum +
+        c.concepts.filter((con) => prefs.completedConceptIds.includes(con.id)).length,
+      0,
+    );
+    const correctAttempts = trackAttempts.filter((a) => a.isCorrect).length;
+    const accuracyPct =
+      trackAttempts.length > 0
+        ? Math.round((correctAttempts / trackAttempts.length) * 100)
+        : 0;
+    const coveragePct =
+      totalTrackConcepts > 0
+        ? Math.round((studiedConceptsCount / totalTrackConcepts) * 100)
+        : 0;
+
+    return {
+      publishedCount: publishedTrackChapters.length,
+      totalChapters: trackChapters.length,
+      studiedConceptsCount,
+      totalTrackConcepts,
+      coveragePct,
+      attemptsCount: trackAttempts.length,
+      accuracyPct,
+      completedExamsCount,
+    };
+  }, [trackChapters, prefs.completedConceptIds, trackAttempts, completedExamsCount]);
+
+  // Exams list: published server blueprints + synthesized chapter tests for SSC/HSSC
+  const availableExams = useMemo<ExamBlueprint[]>(() => {
+    const localTests: ExamBlueprint[] = trackChapters
+      .filter((c) => c.questions.length > 0)
+      .slice(0, 8)
+      .map((c) => {
+        const mcqs = c.questions.filter(
+          (q) =>
+            q.questionType === 'mcq' ||
+            q.questionType === 'true_false' ||
+            q.questionType === 'multi_select',
+        );
+        const shorts = c.questions.filter(
+          (q) =>
+            q.questionType === 'short_answer' ||
+            q.questionType === 'conceptual' ||
+            q.questionType === 'fill_in',
+        );
+        const longs = c.questions.filter(
+          (q) => q.questionType === 'long_answer' || q.questionType === 'numerical',
+        );
+        const sections: ExamBlueprint['sections'] = [];
+        if (mcqs.length > 0) {
+          sections.push({
+            label: 'Section A — Objective MCQs',
+            questionType: 'mcq',
+            marksEach: 1,
+            questionIds: mcqs.map((q) => q.id),
+          });
+        }
+        if (shorts.length > 0) {
+          sections.push({
+            label: 'Section B — Short Questions',
+            questionType: 'short_answer',
+            marksEach: 3,
+            questionIds: shorts.map((q) => q.id),
+          });
+        }
+        if (longs.length > 0) {
+          sections.push({
+            label: 'Section C — Long Questions & 6-Step Numericals',
+            questionType: longs[0]?.questionType === 'numerical' ? 'numerical' : 'long_answer',
+            marksEach: 5,
+            questionIds: longs.map((q) => q.id),
+          });
+        }
+        const totalMarks = sections.reduce(
+          (acc, s) => acc + s.questionIds.length * s.marksEach,
+          0,
+        );
+        const nowIso = c.updatedAt ?? new Date().toISOString();
+        return {
+          id: `local_test_${c.chapterId}`,
+          programmeId: c.programmeId,
+          grade: c.grade,
+          groupId: c.groupId,
+          subjectId: c.subjectId,
+          subjectName: c.subjectName,
+          chapterId: c.chapterId,
+          examKind: 'chapter_test',
+          title: `G${c.grade} Ch ${c.chapterNumber}: ${c.title} — BISE Chapter Paper`,
+          durationMinutes: 25,
+          totalMarks: Math.max(1, totalMarks),
+          sections,
+          publicationStatus: c.publicationStatus,
+          reviewStage: 'published',
+          packVersion: c.packVersion,
+          reviewedBy: 'Built-in Practice Engine',
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+      });
+
+    const mergedIds = new Set(publishedExams.map((e) => e.id));
+    return [...publishedExams, ...localTests.filter((e) => !mergedIds.has(e.id))];
+  }, [publishedExams, trackChapters]);
+
+  const activeExam = useMemo(
+    () => availableExams.find((e) => e.id === selectedExamId) ?? availableExams[0],
+    [availableExams, selectedExamId],
+  );
+
+  const examQuestionLookup = useMemo(() => {
+    const map = new Map<string, CmsQuestion>();
+    for (const c of chapters) {
+      for (const q of c.questions) {
+        map.set(q.id, q);
+      }
+    }
+    return map;
+  }, [chapters]);
+
+  const startExamAttempt = (exam: ExamBlueprint) => {
+    setSelectedExamId(exam.id);
+    setExamSubmissionUuid(`sub_${exam.id}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    setExamStarted(true);
+    setExamFinished(false);
+    setExamAnswers({});
+    setExamSubjectiveChecked({});
+    setExamScoreResult(null);
+    setExamScoringError('');
+    setExamSecondsLeft(Math.max(60, exam.durationMinutes * 60));
+  };
+
+  const computeLocalExamScore = (exam: ExamBlueprint, submissionId: string): ExamScoreResponse => {
+    let scoreObtained = 0;
+    let totalMarks = 0;
+    let gradedCount = 0;
+    const sectionBreakdown: ExamScoreResponse['sectionBreakdown'] = [];
+    const conceptMiss = new Map<
+      string,
+      { conceptId: string; conceptTitle: string; missedCount: number; totalCount: number }
+    >();
+    const items: ExamScoreResponse['items'] = [];
+
+    for (const sec of exam.sections) {
+      let secObtained = 0;
+      let secPossible = 0;
+      for (const qid of sec.questionIds) {
+        const q = examQuestionLookup.get(qid);
+        if (!q) continue;
+        secPossible += sec.marksEach;
+        totalMarks += sec.marksEach;
+        const rawResp = (examAnswers[qid] ?? '').trim();
+        const isObjective =
+          q.questionType === 'mcq' ||
+          q.questionType === 'true_false' ||
+          q.questionType === 'fill_in' ||
+          q.questionType === 'numerical';
+        const correct = isObjective
+          ? Boolean(rawResp) && isAnswerMatch(rawResp, q.correctAnswer, q.questionType)
+          : Boolean(examSubjectiveChecked[qid] || rawResp.length >= 12);
+        const awarded = correct ? sec.marksEach : 0;
+        secObtained += awarded;
+        scoreObtained += awarded;
+        gradedCount += 1;
+
+        const cKey = q.conceptId || q.topicId || q.chapterId;
+        const prev = conceptMiss.get(cKey) ?? {
+          conceptId: cKey,
+          conceptTitle: chapter?.concepts.find((c) => c.id === q.conceptId)?.title || q.topicId || q.chapterId,
+          missedCount: 0,
+          totalCount: 0,
+        };
+        prev.totalCount += 1;
+        if (!correct) prev.missedCount += 1;
+        conceptMiss.set(cKey, prev);
+
+        items.push({
+          questionId: q.id,
+          questionType: q.questionType,
+          marksPossible: sec.marksEach,
+          marksAwarded: awarded,
+          isCorrect: correct,
+          correctAnswer: q.correctAnswer,
+          explanation: q.explanation,
+        });
+      }
+      sectionBreakdown.push({
+        label: sec.label,
+        obtained: secObtained,
+        possible: secPossible,
+      });
+    }
+
+    const weakTopics = Array.from(conceptMiss.values())
+      .filter((entry) => entry.missedCount > 0)
+      .map((entry) => ({
+        topicId: entry.conceptId,
+        conceptId: entry.conceptId,
+        conceptTitle: entry.conceptTitle,
+        missedCount: entry.missedCount,
+        totalCount: entry.totalCount,
+        accuracyPercent: Math.round(((entry.totalCount - entry.missedCount) / Math.max(1, entry.totalCount)) * 100),
+      }));
+
+    return {
+      submissionUuid: submissionId,
+      examId: exam.id,
+      examTitle: exam.title,
+      scoreObtained,
+      totalMarks: Math.max(1, totalMarks),
+      percentage: Math.round((scoreObtained / Math.max(1, totalMarks)) * 100),
+      gradedCount,
+      sectionBreakdown,
+      weakTopics,
+      items,
+      scoredAt: new Date().toISOString(),
+      idempotentReplay: false,
+    };
+  };
+
+  const finishExamAttempt = async () => {
+    if (!activeExam) return;
+    setExamFinished(true);
+    setExamScoringLoading(true);
+    setExamScoringError('');
+    setCompletedExamsCount((c) => c + 1);
+
+    const answerList = activeExam.sections.flatMap((sec) =>
+      sec.questionIds.map((qid) => ({
+        questionId: qid,
+        response: examAnswers[qid] ?? '',
+        selfScore: examSubjectiveChecked[qid] ? 1 : undefined,
+      })),
+    );
+    const totalSec = Math.max(60, activeExam.durationMinutes * 60);
+    const spentSec = Math.max(1, totalSec - examSecondsLeft);
+
+    try {
+      const res = await fetch(`/api/v1/exams/${encodeURIComponent(activeExam.id)}/score`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          submissionUuid: examSubmissionUuid,
+          timeSpentSec: spentSec,
+          answers: answerList,
+        }),
+      });
+      if (res.ok) {
+        const result = (await res.json()) as ExamScoreResponse;
+        setExamScoreResult(result);
+      } else if (activeExam.id.startsWith('local_test_') || res.status === 404) {
+        setExamScoreResult(computeLocalExamScore(activeExam, examSubmissionUuid));
+      } else {
+        setExamScoringError('Could not retrieve authoritative server score. Retry below.');
+        setExamScoreResult(computeLocalExamScore(activeExam, examSubmissionUuid));
+      }
+    } catch {
+      setExamScoringError('Offline mode: calculated local score. Reconnect and Retry to sync.');
+      setExamScoreResult(computeLocalExamScore(activeExam, examSubmissionUuid));
+    } finally {
+      setExamScoringLoading(false);
+    }
+
+    let recorded = 0;
+    for (const sec of activeExam.sections) {
+      for (const qid of sec.questionIds) {
+        const q = examQuestionLookup.get(qid);
+        if (q && (q.questionType === 'mcq' || q.questionType === 'true_false') && examAnswers[qid]) {
+          recorded += 1;
+          onRecordAttempt({
+            id: `att_exam_${qid}_${Date.now()}_${recorded}`,
+            programmeId: q.programmeId,
+            questionId: q.id,
+            chapterId: q.chapterId,
+            subjectName: activeExam.subjectName || activeExam.title,
+            conceptTitle: activeExam.examKind.replaceAll('_', ' '),
+            isCorrect: isAnswerMatch(examAnswers[qid], q.correctAnswer, q.questionType),
+            difficulty: q.difficulty,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
+    }
+    if (recorded > 0) bumpDailyGoalProgress(recorded, 0);
+  };
+
+  // Daily 10-MCQ strictly respects active track isolation
+  const isAdmissionTrack = prefs.programmeTrack !== 'ssc_hssc';
   const challengeQuestions = useMemo(() => {
-    if (challengeTrack === 'mdcat') {
+    if (isAdmissionTrack) {
       return MDCAT_CHALLENGE_BANK.slice(0, 10);
     }
-    const chapterMcqs = chapters.flatMap((c) =>
+    const chapterMcqs = trackChapters.flatMap((c) =>
       c.questions.filter((q) => q.programmeId === 'ssc_hssc' && q.questionType === 'mcq'),
     );
     const seen = new Set(chapterMcqs.map((q) => q.id));
@@ -216,13 +836,21 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
       ...BOARD_CHALLENGE_MCQS.filter((q) => !seen.has(q.id)),
     ];
     return merged.slice(0, 10);
-  }, [challengeTrack, chapters]);
+  }, [isAdmissionTrack, trackChapters]);
 
   const activeChallengeQ = challengeQuestions[challengeIdx];
 
-  // Chapter-wise Solved Past Paper Browser index across loaded chapters + model board pool
+  const resetDailyChallenge = () => {
+    setChallengeIdx(0);
+    setChallengeSelected('');
+    setChallengeSubmitted(false);
+    setChallengeScore(0);
+    setChallengeFinished(false);
+  };
+
+  // Past papers browser index
   const pastPaperEntries = useMemo(() => {
-    const fromChapters = chapters.flatMap((ch) =>
+    const fromChapters = trackChapters.flatMap((ch) =>
       ch.questions.map((q) => ({
         question: q,
         subjectName: ch.subjectName,
@@ -230,8 +858,9 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
         chapterTitle: ch.title,
       })),
     );
+    if (isAdmissionTrack) return fromChapters;
     const seen = new Set(fromChapters.map((e) => e.question.id));
-    const extraModelPapers = BOARD_CHALLENGE_MCQS.filter((q) => !seen.has(q.id)).map((q) => ({
+    const extra = BOARD_CHALLENGE_MCQS.filter((q) => !seen.has(q.id)).map((q) => ({
       question: q,
       subjectName:
         q.subjectId.startsWith('phy')
@@ -242,296 +871,677 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
               ? 'Mathematics (English Medium)'
               : 'Biology (English Medium)',
       chapterNumber: q.grade === 9 ? 2 : q.grade === 10 ? 9 : 2,
-      chapterTitle:
-        q.subjectId.startsWith('phy_9')
-          ? 'Kinematics'
-          : q.subjectId.startsWith('chem_10')
-            ? 'Chemical Equilibrium'
-            : 'Vectors & Foundations',
+      chapterTitle: 'KPK Board Core Concepts',
     }));
-    return [...fromChapters, ...extraModelPapers];
-  }, [chapters]);
+    return [...fromChapters, ...extra];
+  }, [trackChapters, isAdmissionTrack]);
 
-  const availableSubjects = useMemo(() => {
-    return Array.from(new Set(pastPaperEntries.map((e) => e.subjectName)));
-  }, [pastPaperEntries]);
+  const availablePpSubjects = useMemo(
+    () => Array.from(new Set(pastPaperEntries.map((e) => e.subjectName))),
+    [pastPaperEntries],
+  );
 
   const filteredPastPapers = useMemo(() => {
     return pastPaperEntries.filter(({ question, subjectName }) => {
+      if (
+        ppVerifiedOnly &&
+        question.sourceType !== 'official_past_paper' &&
+        question.sourceType !== 'official_model_paper'
+      ) {
+        return false;
+      }
       if (ppBoardFilter !== 'ALL' && question.sourceBoardId !== ppBoardFilter) return false;
       if (ppGradeFilter !== 'ALL' && question.grade !== Number(ppGradeFilter)) return false;
       if (ppSubjectFilter !== 'ALL' && subjectName !== ppSubjectFilter) return false;
       if (ppTypeFilter !== 'ALL' && question.questionType !== ppTypeFilter) return false;
       return true;
     });
-  }, [pastPaperEntries, ppBoardFilter, ppGradeFilter, ppSubjectFilter, ppTypeFilter]);
-
-  const resetPractice = (nextIdx = 0) => {
-    setQIndex(nextIdx);
-    setHintsShown(0);
-    setSelectedOption('');
-    setTypedAnswer('');
-    setPracticeError('');
-    setSubmitted(false);
-    setIsCorrect(false);
-    setCheckedPoints([]);
-  };
-
-  const resetDailyChallenge = (nextTrack: 'board' | 'mdcat') => {
-    setChallengeTrack(nextTrack);
-    setChallengeIdx(0);
-    setChallengeSelected('');
-    setChallengeSubmitted(false);
-    setChallengeScore(0);
-    setChallengeFinished(false);
-  };
-
-  const handleChapterChange = (id: string) => {
-    setSelectedChapterId(id);
-    setMicroStep(0);
-    setMicroChoice(null);
-    setActiveUrduIdx(null);
-    setShowPostSessionAd(false);
-    resetPractice(0);
-  };
-
-  const handleSubmitQuestion = () => {
-    if (!currentQ || !chapter) return;
-    setPracticeError('');
-
-    let ok = false;
-    if (currentQ.questionType === 'short_answer' || currentQ.questionType === 'long_answer') {
-      const effectivePoints =
-        currentQ.markingPoints.length > 0
-          ? currentQ.markingPoints
-          : ['My written answer matches the key points in the model answer above.'];
-      const needed = Math.max(1, Math.ceil(effectivePoints.length / 2));
-      ok = checkedPoints.length >= needed;
-    } else {
-      const raw = currentQ.options.length > 0 ? selectedOption : typedAnswer;
-      if (!raw.trim()) {
-        setPracticeError(
-          currentQ.options.length > 0
-            ? 'Please select an answer option before submitting.'
-            : 'Please enter your answer before submitting.',
-        );
-        return;
-      }
-      ok = isAnswerMatch(raw, currentQ.correctAnswer, currentQ.questionType);
-    }
-
-    setSubmitted(true);
-    setIsCorrect(ok);
-    bumpDailyGoalProgress(1, 0);
-    onRecordAttempt({
-      id: `att_${Date.now()}`,
-      programmeId: currentQ.programmeId,
-      questionId: currentQ.id,
-      chapterId: chapter.chapterId,
-      subjectName: chapter.subjectName,
-      conceptTitle: concept?.title ?? chapter.title,
-      isCorrect: ok,
-      difficulty: currentQ.difficulty,
-      timestamp: new Date().toISOString(),
-    });
-  };
-
-  const handleNextQuestion = () => {
-    if (qIndex + 1 < questions.length) {
-      resetPractice(qIndex + 1);
-    } else {
-      setShowPostSessionAd(true);
-    }
-  };
-
-  const handleSubmitChallengeQuestion = () => {
-    if (!activeChallengeQ || !challengeSelected) return;
-    const ok = challengeSelected === activeChallengeQ.correctAnswer;
-    setChallengeSubmitted(true);
-    if (ok) setChallengeScore((s) => s + 1);
-    bumpDailyGoalProgress(1, 0);
-    onRecordAttempt({
-      id: `att_daily_${Date.now()}`,
-      programmeId: challengeTrack === 'mdcat' ? 'mdcat' : 'ssc_hssc',
-      questionId: activeChallengeQ.id,
-      chapterId: activeChallengeQ.chapterId,
-      subjectName: challengeTrack === 'mdcat' ? 'MDCAT Daily Challenge' : 'KPK Board Daily 10',
-      conceptTitle: `Daily 10-MCQ (${challengeTrack === 'mdcat' ? 'MDCAT' : 'Board'})`,
-      isCorrect: ok,
-      difficulty: activeChallengeQ.difficulty,
-      timestamp: new Date().toISOString(),
-    });
-  };
-
-  const handleNextChallengeQuestion = () => {
-    if (challengeIdx + 1 < challengeQuestions.length) {
-      setChallengeIdx((i) => i + 1);
-      setChallengeSelected('');
-      setChallengeSubmitted(false);
-    } else {
-      setChallengeFinished(true);
-      const trackKey = `${dailyGoal.todayDateIso}_${challengeTrack}`;
-      setDailyGoal((prev) => ({
-        ...prev,
-        completedDailyTracks: {
-          ...prev.completedDailyTracks,
-          [trackKey]: {
-            score: challengeScore,
-            total: challengeQuestions.length,
-            completedAt: new Date().toISOString(),
-          },
-        },
-      }));
-    }
-  };
-
-  const handleTapMatchRight = (pairId: string, label: string) => {
-    if (!matchLeft || matchedIds.includes(pairId)) return;
-    if (matchLeft === pairId) {
-      setMatchedIds((prev) => [...prev, pairId]);
-      setMatchFeedback(`Matched: ${label}`);
-      setMatchLeft(null);
-    } else {
-      setMatchFeedback('Not a match — check the unit or formula carefully.');
-    }
-  };
+  }, [
+    pastPaperEntries,
+    ppVerifiedOnly,
+    ppBoardFilter,
+    ppGradeFilter,
+    ppSubjectFilter,
+    ppTypeFilter,
+  ]);
 
   const dailyPct = Math.min(
     100,
     dailyGoal.todayLessonsCompleted >= 1
       ? 100
-      : Math.round((dailyGoal.todayQuestionsCompleted / dailyGoal.dailyQuestionTarget) * 100),
+      : Math.round((dailyGoal.todayQuestionsCompleted / Math.max(1, dailyGoal.dailyQuestionTarget)) * 100),
   );
-
-  if (!chapter) {
-    return (
-      <div className="rounded-xl border border-neutral-200 bg-white p-8 text-center dark:border-neutral-800 dark:bg-neutral-900">
-        <p className="text-sm text-neutral-600 dark:text-neutral-300">
-          No chapters available yet. Use Book Uploader to add or generate sample chapters.
-        </p>
-      </div>
-    );
-  }
 
   const microCards = concept?.microCards ?? [];
   const safeMicroStep =
     microCards.length > 0 ? Math.min(microStep, microCards.length - 1) : 0;
   const activeMicroCard = microCards[safeMicroStep];
+  const flashcards = concept?.flashcards ?? [];
+  const safeFlashcardIdx =
+    flashcards.length > 0 ? Math.min(flashcardIdx, flashcards.length - 1) : 0;
+  const activeFlashcard = flashcards[safeFlashcardIdx];
 
   return (
     <div className="space-y-6">
-      {/* Unified Calm Study Header: Context + Streak + Mode Switcher */}
-      <div className="space-y-4 border-b border-neutral-200 pb-4 dark:border-neutral-800">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <select
-              aria-label="Select KPK BISE Board"
-              value={board}
-              onChange={(e) => setBoard(e.target.value)}
-              className="min-h-10 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs font-medium text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-            >
-              {KPK_BOARDS.map((b) => (
-                <option key={b} value={b}>
-                  {b}
-                </option>
-              ))}
-            </select>
-
-            <select
-              aria-label="Select Chapter"
-              value={chapter.chapterId}
-              onChange={(e) => handleChapterChange(e.target.value)}
-              className="min-h-10 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs font-medium text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-            >
-              {chapters.map((ch) => (
-                <option key={ch.chapterId} value={ch.chapterId}>
-                  Grade {ch.grade} · {ch.subjectName} — Ch {ch.chapterNumber}: {ch.title}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* 5-Minute Study Routine Status */}
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              <Flame className="h-4 w-4 text-[#B4690E] dark:text-[#E6A756]" />
-              <span className="font-mono-tabular text-xs font-semibold text-neutral-900 dark:text-neutral-100">
-                {dailyGoal.currentStreakDays}-day streak
-              </span>
-            </div>
-            <span className="text-xs text-neutral-500 dark:text-neutral-400">
-              Goal:{' '}
-              <span className="font-mono-tabular font-semibold text-neutral-800 dark:text-neutral-200">
-                {dailyGoal.todayQuestionsCompleted}/{dailyGoal.dailyQuestionTarget}
-              </span>{' '}
-              Qs · Grace:{' '}
-              <span className="font-mono-tabular font-semibold">
-                {dailyGoal.graceFreezesRemaining}
-              </span>
-            </span>
-            <div className="h-1.5 w-24 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
-              <div
-                className="h-full bg-[#1B6B46] transition-all duration-200 dark:bg-[#6CD19B]"
-                style={{ width: `${dailyPct}%` }}
-              />
-            </div>
-          </div>
-        </div>
-
+      {/* Unified Student Navigation & Isolated Programme Track Bar */}
+      <div className="space-y-3 rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-1 overflow-x-auto rounded-lg bg-neutral-100 p-1 dark:bg-neutral-800/80">
+          {/* 7 Core Student App Sections */}
+          <nav
+            aria-label="Student App Sections"
+            className="flex items-center gap-1 overflow-x-auto rounded-lg bg-neutral-100 p-1 dark:bg-neutral-800"
+          >
             {(
               [
-                ['learn', 'Learn Lesson'],
-                ['practice', `Practice (${questions.length})`],
-                ['daily10', 'Daily 10-MCQ'],
-                ['pastpapers', 'Past Papers'],
-                ['match', 'Formula Match'],
+                ['home', 'Home', Compass],
+                ['learn', 'Learn', BookOpen],
+                ['practice', 'Practice', Target],
+                ['preparation', 'Preparation', Award],
+                ['exams', 'Exams', Clock],
+                ['books', 'Books', Layers],
+                ['profile', 'Profile', User],
               ] as const
-            ).map(([id, label]) => (
+            ).map(([id, label, Icon]) => (
               <button
                 key={id}
                 type="button"
-                onClick={() => {
-                  setMode(id);
-                  setShowPostSessionAd(false);
-                }}
-                className={`min-h-9 shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                  mode === id
-                    ? 'bg-white text-[#1B6B46] dark:bg-neutral-900 dark:text-[#6CD19B]'
+                onClick={() => setSection(id)}
+                className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  section === id
+                    ? 'bg-white text-[#1B6B46] shadow-sm dark:bg-neutral-900 dark:text-[#6CD19B]'
                     : 'text-neutral-600 hover:text-neutral-900 dark:text-neutral-300 dark:hover:text-white'
                 }`}
               >
+                <Icon className="h-3.5 w-3.5" />
                 {label}
               </button>
             ))}
-          </div>
+          </nav>
 
-          <label className="flex cursor-pointer items-center gap-2 whitespace-nowrap text-xs text-neutral-600 dark:text-neutral-300">
-            <input
-              type="checkbox"
-              checked={showAdPreview}
-              onChange={(e) => setShowAdPreview(e.target.checked)}
-              className="accent-[#1B6B46]"
-            />
-            Ad Slot Preview
-          </label>
+          {/* Isolated Track + KPK Board + Streak */}
+          <div className="flex flex-wrap items-center gap-2.5">
+            <select
+              aria-label="Study Track"
+              value={prefs.programmeTrack}
+              onChange={(e) => {
+                const nextTrack = e.target.value as ProgrammeId;
+                setPrefs((prev) => ({ ...prev, programmeTrack: nextTrack }));
+                resetDailyChallenge();
+              }}
+              className="min-h-9 rounded-lg border border-neutral-200 bg-white px-2.5 text-xs font-semibold dark:border-neutral-700 dark:bg-neutral-800"
+            >
+              <option value="ssc_hssc">KPK Board (Grades 9–12)</option>
+              <option value="mdcat">MDCAT Admission (Isolated)</option>
+              <option value="etea_eng">ETEA Engineering (Isolated)</option>
+              <option value="uni_entrance">University Entrance (Isolated)</option>
+            </select>
+
+            <div className="flex items-center gap-1.5 rounded-lg border border-neutral-200 px-2.5 py-1.5 text-xs dark:border-neutral-700">
+              <Flame className="h-3.5 w-3.5 text-[#B4690E] dark:text-[#E6A756]" />
+              <span className="font-mono-tabular font-semibold">
+                {dailyGoal.currentStreakDays}d streak
+              </span>
+              <span className="text-neutral-400">·</span>
+              <span className="font-mono-tabular text-neutral-600 dark:text-neutral-300">
+                {dailyGoal.todayQuestionsCompleted}/{dailyGoal.dailyQuestionTarget} Qs
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Interactive Student Stage + Mobile Companion */}
-      <div className="grid items-start gap-6 lg:grid-cols-[1fr_340px]">
-        <div className="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-800 dark:bg-neutral-900">
-          {/* LEARN LESSON */}
-          {mode === 'learn' && concept && (
-            <div className="space-y-6">
+      {/* Guided 4-Step Student Study Setup Wizard (Non-Blocking & Persisted) */}
+      {showOnboardingBanner && (
+        <MotionReveal className="rounded-xl border border-[#1B6B46]/35 bg-white p-5 dark:border-[#6CD19B]/30 dark:bg-neutral-900">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-200 pb-3 dark:border-neutral-800">
+            <div>
+              <div className="text-[11px] font-semibold text-[#1B6B46] dark:text-[#6CD19B]">
+                Step {onboardingStep + 1} of 4 · Student Setup
+              </div>
+              <h2 className="font-display text-base font-bold text-neutral-900 dark:text-neutral-100">
+                {onboardingStep === 0 && 'Welcome to Roshan Study — Offline KPK Board Prep'}
+                {onboardingStep === 1 && 'Choose Your Target Class (Grades 9–12)'}
+                {onboardingStep === 2 && 'Select Your KPK BISE Board'}
+                {onboardingStep === 3 && 'Choose Your Study Track & Daily Question Goal'}
+              </h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setPrefs((p) => ({ ...p, onboardingCompleted: true }));
+                setShowOnboardingBanner(false);
+              }}
+              className="text-xs font-semibold text-neutral-500 hover:underline dark:text-neutral-400"
+            >
+              Skip Setup
+            </button>
+          </div>
+
+          <div className="mt-4 text-xs">
+            {onboardingStep === 0 && (
+              <p className="max-w-2xl leading-relaxed text-neutral-600 dark:text-neutral-300">
+                Master concepts in 5 guided steps, solve 8 KPK board formats including 6-step
+                numericals, and practise timed papers completely offline with zero account required.
+              </p>
+            )}
+
+            {onboardingStep === 1 && (
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {([9, 10, 11, 12] as const).map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => setPrefs((p) => ({ ...p, targetGrade: g }))}
+                    className={`rounded-lg border px-3 py-2.5 text-left font-semibold transition ${
+                      prefs.targetGrade === g
+                        ? 'border-[#1B6B46] bg-[#D6F0E1]/40 text-[#1B6B46] dark:border-[#6CD19B] dark:text-[#6CD19B]'
+                        : 'border-neutral-200 dark:border-neutral-700'
+                    }`}
+                  >
+                    Grade {g} ({g <= 10 ? `SSC ${g === 9 ? 'I' : 'II'}` : `HSSC ${g === 11 ? 'I' : 'II'}`})
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {onboardingStep === 2 && (
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {KPK_BOARDS.map((b) => (
+                  <button
+                    key={b}
+                    type="button"
+                    onClick={() => setPrefs((p) => ({ ...p, board: b }))}
+                    className={`rounded-lg border px-3 py-2 text-left font-semibold transition ${
+                      prefs.board === b
+                        ? 'border-[#1B6B46] bg-[#D6F0E1]/40 text-[#1B6B46] dark:border-[#6CD19B] dark:text-[#6CD19B]'
+                        : 'border-neutral-200 dark:border-neutral-700'
+                    }`}
+                  >
+                    {b}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {onboardingStep === 3 && (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block font-semibold">Study Track</label>
+                  <select
+                    value={prefs.programmeTrack}
+                    onChange={(e) =>
+                      setPrefs((p) => ({ ...p, programmeTrack: e.target.value as ProgrammeId }))
+                    }
+                    className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-800"
+                  >
+                    <option value="ssc_hssc">KPK Board (SSC / HSSC)</option>
+                    <option value="mdcat">MDCAT Admission</option>
+                    <option value="etea_eng">ETEA Engineering</option>
+                    <option value="uni_entrance">University Entrance</option>
+                  </select>
+                </div>
+                <div>
+                  <div className="mb-1 flex justify-between font-semibold">
+                    <span>Daily Question Target</span>
+                    <span className="font-mono-tabular">{dailyGoal.dailyQuestionTarget} Qs / day</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={5}
+                    max={30}
+                    step={5}
+                    value={dailyGoal.dailyQuestionTarget}
+                    onChange={(e) =>
+                      setDailyGoal((d) => ({ ...d, dailyQuestionTarget: Number(e.target.value) }))
+                    }
+                    className="w-full accent-[#1B6B46]"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-4 flex items-center justify-between border-t border-neutral-200 pt-3 dark:border-neutral-800">
+            <button
+              type="button"
+              disabled={onboardingStep === 0}
+              onClick={() => setOnboardingStep((s) => Math.max(0, s - 1))}
+              className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-semibold disabled:opacity-40 dark:border-neutral-700"
+            >
+              Back
+            </button>
+            {onboardingStep < 3 ? (
+              <button
+                type="button"
+                onClick={() => setOnboardingStep((s) => Math.min(3, s + 1))}
+                className="rounded-lg bg-[#1B6B46] px-4 py-1.5 text-xs font-semibold text-white"
+              >
+                Continue
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setPrefs((p) => ({ ...p, onboardingCompleted: true }));
+                  setShowOnboardingBanner(false);
+                }}
+                className="rounded-lg bg-[#1B6B46] px-4 py-1.5 text-xs font-semibold text-white"
+              >
+                Finish Setup &amp; Start Studying
+              </button>
+            )}
+          </div>
+        </MotionReveal>
+      )}
+
+      {/* SECTION 1: HOME */}
+      <MotionScreenSwap motionKey={section}>
+      {section === 'home' && (
+        <div className="grid items-start gap-6 lg:grid-cols-[1.5fr_1fr]">
+          <div className="space-y-6">
+            {/* Hero Focal Anchor: Continue Learning */}
+            <div className="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-800 dark:bg-neutral-900">
+              <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                {prefs.programmeTrack === 'ssc_hssc'
+                  ? `${prefs.board} · Grade ${chapter?.grade ?? prefs.targetGrade} Board Track`
+                  : `${prefs.programmeTrack.toUpperCase()} Isolated Admission Track`}
+              </div>
+              <h2 className="font-display mt-1 text-2xl font-bold text-neutral-900 dark:text-neutral-100">
+                {chapter
+                  ? `Continue: Ch ${chapter.chapterNumber} — ${chapter.title}`
+                  : 'Explore KPK BISE Chapters'}
+              </h2>
+              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-neutral-600 dark:text-neutral-300">
+                {chapter
+                  ? `${chapter.subjectName} · ${chapter.concepts.length} concept(s) · ${chapter.questions.length} board-aligned question(s) ready offline.`
+                  : 'Upload a textbook PDF or import sample chapters to begin.'}
+              </p>
+
+              <div className="mt-4 flex flex-wrap gap-2.5">
+                {chapter && (
+                  <button
+                    type="button"
+                    onClick={() => handleSelectChapter(chapter.chapterId, 'learn')}
+                    className="rounded-lg bg-[#1B6B46] px-4 py-2.5 text-xs font-semibold text-white hover:bg-[#155537]"
+                  >
+                    Resume Guided Lesson
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSection('preparation');
+                    setPrepSubTab('daily10');
+                  }}
+                  className="rounded-lg border border-neutral-200 px-4 py-2.5 text-xs font-semibold text-neutral-800 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-100"
+                >
+                  Daily 10-MCQ Revision
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSection('books')}
+                  className="rounded-lg border border-neutral-200 px-4 py-2.5 text-xs font-semibold text-neutral-800 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-100"
+                >
+                  Open PDF Library
+                </button>
+              </div>
+            </div>
+
+            {/* Today's Study Plan & Recommended Lessons */}
+            <div className="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-800 dark:bg-neutral-900">
+              <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                Recommended Chapters ({trackChapters.length} Loaded)
+              </h3>
+              <div className="mt-3 divide-y divide-neutral-200 dark:divide-neutral-800">
+                {trackChapters.slice(0, 6).map((ch) => (
+                  <div
+                    key={ch.chapterId}
+                    className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-1 last:pb-1"
+                  >
+                    <div>
+                      <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                        Grade {ch.grade} · {ch.subjectName} · Ch {ch.chapterNumber}
+                      </div>
+                      <div className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+                        {ch.title}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleSelectChapter(ch.chapterId, 'learn')}
+                        className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-semibold text-[#1B6B46] hover:bg-neutral-50 dark:border-neutral-700 dark:text-[#6CD19B]"
+                      >
+                        Learn
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSelectChapter(ch.chapterId, 'practice')}
+                        className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-200"
+                      >
+                        Practise ({ch.questions.length})
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Right Column: Today's Study Plan, Weak Areas (from real attempts) & Upcoming Exam */}
+          <aside className="space-y-5">
+            <div className="rounded-xl border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-900">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                  Today&apos;s Study Goal
+                </h3>
+                <span className="font-mono-tabular text-xs font-bold text-[#1B6B46] dark:text-[#6CD19B]">
+                  {dailyPct}%
+                </span>
+              </div>
+              <MotionProgressTrack percent={dailyPct} className="mt-2 h-2 w-full overflow-hidden rounded-full bg-neutral-100 dark:bg-neutral-800" />
+              <p className="mt-2 text-xs text-neutral-600 dark:text-neutral-300">
+                <span className="font-mono-tabular font-semibold">
+                  {dailyGoal.todayQuestionsCompleted}/{dailyGoal.dailyQuestionTarget}
+                </span>{' '}
+                questions solved today ·{' '}
+                <span className="font-mono-tabular">{dailyGoal.graceFreezesRemaining}</span>{' '}
+                load-shedding grace freezes left.
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-900">
+              <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                Weak Areas (From Real Practice)
+              </h3>
+              {weakAreas.length === 0 ? (
+                <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
+                  No weak topics flagged yet — solve practice questions and incorrect items will
+                  appear here automatically for targeted revision.
+                </p>
+              ) : (
+                <div className="mt-3 space-y-2.5">
+                  {weakAreas.map((w) => (
+                    <div
+                      key={w.chapterId}
+                      className="flex items-center justify-between gap-2 text-xs"
+                    >
+                      <div>
+                        <div className="font-semibold text-neutral-900 dark:text-neutral-100">
+                          {w.subjectName}
+                        </div>
+                        <div className="font-mono-tabular text-neutral-500">
+                          {w.wrong}/{w.total} missed
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleSelectChapter(w.chapterId, 'practice')}
+                        className="rounded-lg border border-neutral-200 px-2.5 py-1 text-xs font-semibold text-[#1B6B46] dark:border-neutral-700 dark:text-[#6CD19B]"
+                      >
+                        Drill
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-900">
+              <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                Available Mock &amp; Chapter Exams ({availableExams.length})
+              </h3>
+              {availableExams[0] && (
+                <div className="mt-2 space-y-2 text-xs">
+                  <div className="font-semibold text-neutral-800 dark:text-neutral-200">
+                    {availableExams[0].title}
+                  </div>
+                  <div className="font-mono-tabular text-neutral-500">
+                    {availableExams[0].durationMinutes} min · {availableExams[0].totalMarks} marks
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSection('exams');
+                      startExamAttempt(availableExams[0]);
+                    }}
+                    className="rounded-lg bg-[#1B6B46] px-3 py-1.5 text-xs font-semibold text-white"
+                  >
+                    Start Timed Paper
+                  </button>
+                </div>
+              )}
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {/* SECTION 2: LEARN (Hierarchy Explorer + Guided 5-Step + Full 12-Part Concept + Motion/Graphs/Flashcards) */}
+      {section === 'learn' && (
+        <div className="space-y-5">
+          {/* Curriculum Hierarchy Browser */}
+          <div className="space-y-3 rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-[1fr_130px_160px_180px]">
+              <div className="relative">
+                <Search className="pointer-events-none absolute top-1/2 left-3 h-3.5 w-3.5 -translate-y-1/2 text-neutral-400" />
+                <input
+                  value={catalogSearch}
+                  onChange={(e) => {
+                    setCatalogSearch(e.target.value);
+                    setCatalogPage(1);
+                  }}
+                  placeholder={`Search ${trackChapters.length} chapters, topics, or learning outcomes...`}
+                  className="min-h-10 w-full rounded-lg border border-neutral-200 bg-neutral-50 pr-3 pl-9 text-xs dark:border-neutral-700 dark:bg-neutral-950"
+                />
+              </div>
+
+              <select
+                aria-label="Filter Grade"
+                value={catalogGrade}
+                onChange={(e) => {
+                  setCatalogGrade(e.target.value);
+                  setCatalogPage(1);
+                }}
+                className="min-h-10 rounded-lg border border-neutral-200 bg-white px-2.5 text-xs font-medium dark:border-neutral-700 dark:bg-neutral-800"
+              >
+                <option value="ALL">Grades 9–12</option>
+                <option value="9">Grade 9 (SSC I)</option>
+                <option value="10">Grade 10 (SSC II)</option>
+                <option value="11">Grade 11 (HSSC I)</option>
+                <option value="12">Grade 12 (HSSC II)</option>
+              </select>
+
+              <select
+                aria-label="Filter Academic Group"
+                value={catalogGroup}
+                onChange={(e) => {
+                  setCatalogGroup(e.target.value);
+                  setCatalogPage(1);
+                }}
+                className="min-h-10 rounded-lg border border-neutral-200 bg-white px-2.5 text-xs font-medium dark:border-neutral-700 dark:bg-neutral-800"
+              >
+                <option value="ALL">All Groups</option>
+                {dynamicCatalogGroups.map((grp) => (
+                  <option key={grp} value={grp}>
+                    {grp.replaceAll('_', ' ')}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                aria-label="Filter Subject"
+                value={catalogSubject}
+                onChange={(e) => {
+                  setCatalogSubject(e.target.value);
+                  setCatalogPage(1);
+                }}
+                className="min-h-10 rounded-lg border border-neutral-200 bg-white px-2.5 text-xs font-medium dark:border-neutral-700 dark:bg-neutral-800"
+              >
+                <option value="ALL">All Subjects ({dynamicCatalogSubjects.length})</option>
+                {dynamicCatalogSubjects.map((sub) => (
+                  <option key={sub} value={sub}>
+                    {sub}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  aria-label="Select Chapter"
+                  value={chapter?.chapterId ?? ''}
+                  onChange={(e) => handleSelectChapter(e.target.value)}
+                  className="min-h-9 rounded-lg border border-neutral-200 bg-white px-3 text-xs font-semibold dark:border-neutral-700 dark:bg-neutral-800"
+                >
+                  {pagedCatalogChapters.map((ch) => (
+                    <option key={ch.chapterId} value={ch.chapterId}>
+                      Grade {ch.grade} · {ch.subjectName} — Ch {ch.chapterNumber}: {ch.title}
+                    </option>
+                  ))}
+                </select>
+
+                {concepts.length > 1 && (
+                  <select
+                    aria-label="Select Concept"
+                    value={safeConceptIdx}
+                    onChange={(e) => {
+                      setSelectedConceptIdx(Number(e.target.value));
+                      setMicroStep(0);
+                      setMicroChoice(null);
+                      setFlashcardIdx(0);
+                      setFlashcardFlipped(false);
+                    }}
+                    className="min-h-9 rounded-lg border border-neutral-200 bg-white px-3 text-xs font-medium dark:border-neutral-700 dark:bg-neutral-800"
+                  >
+                    {concepts.map((c, idx) => (
+                      <option key={c.id} value={idx}>
+                        Concept {idx + 1}: {c.title}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                {totalCatalogPages > 1 && (
+                  <div className="flex items-center gap-1 text-xs">
+                    <button
+                      type="button"
+                      disabled={safeCatalogPage <= 1}
+                      onClick={() => setCatalogPage((p) => Math.max(1, p - 1))}
+                      className="rounded border border-neutral-200 px-2 py-1 disabled:opacity-40 dark:border-neutral-700"
+                    >
+                      Prev
+                    </button>
+                    <span className="font-mono-tabular px-1 text-neutral-500">
+                      {safeCatalogPage}/{totalCatalogPages}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={safeCatalogPage >= totalCatalogPages}
+                      onClick={() => setCatalogPage((p) => Math.min(totalCatalogPages, p + 1))}
+                      className="rounded border border-neutral-200 px-2 py-1 disabled:opacity-40 dark:border-neutral-700"
+                    >
+                      Next
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {chapter && (
+                <button
+                  type="button"
+                  onClick={() => toggleChapterBookmark(chapter.chapterId)}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold ${
+                    prefs.bookmarkedChapterIds.includes(chapter.chapterId)
+                      ? 'border-[#1B6B46] bg-[#D6F0E1]/40 text-[#1B6B46] dark:border-[#6CD19B] dark:text-[#6CD19B]'
+                      : 'border-neutral-200 text-neutral-700 dark:border-neutral-700 dark:text-neutral-200'
+                  }`}
+                >
+                  <Bookmark className="h-3.5 w-3.5" />
+                  {prefs.bookmarkedChapterIds.includes(chapter.chapterId)
+                    ? 'Saved Chapter'
+                    : 'Bookmark Chapter'}
+                </button>
+              )}
+            </div>
+
+            {/* 5-Step Guided Study Loop */}
+            <div className="grid grid-cols-5 gap-1.5 rounded-lg border border-neutral-200 bg-neutral-50 p-1.5 text-[11px] dark:border-neutral-800 dark:bg-neutral-950">
+              {(
+                [
+                  {
+                    step: '1. Understand',
+                    active: guidedMode && safeMicroStep < 2,
+                    onClick: () => {
+                      setGuidedMode(true);
+                      setMicroStep(0);
+                    },
+                  },
+                  {
+                    step: '2. Recall',
+                    active: !guidedMode || safeMicroStep >= 2,
+                    onClick: () => setGuidedMode(false),
+                  },
+                  {
+                    step: '3. Practise',
+                    active: false,
+                    onClick: () => setSection('practice'),
+                  },
+                  {
+                    step: '4. Apply',
+                    active: false,
+                    onClick: () => {
+                      setSection('preparation');
+                      setPrepSubTab('pastpapers');
+                    },
+                  },
+                  {
+                    step: '5. Test',
+                    active: false,
+                    onClick: () => setSection('exams'),
+                  },
+                ] as const
+              ).map((item) => (
+                <button
+                  key={item.step}
+                  type="button"
+                  onClick={item.onClick}
+                  className={`rounded-md px-2 py-1.5 text-center font-semibold transition ${
+                    item.active
+                      ? 'bg-[#1B6B46] text-white'
+                      : 'text-neutral-600 hover:bg-white dark:text-neutral-300 dark:hover:bg-neutral-800'
+                  }`}
+                >
+                  {item.step}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {chapter && concept ? (
+            <div className="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-800 dark:bg-neutral-900">
+              {(chapter.chapterIntro || (chapter.prerequisites && chapter.prerequisites.length > 0)) && (
+                <div className="mb-4 space-y-1.5 rounded-lg border border-neutral-200 bg-neutral-50 p-3.5 text-xs dark:border-neutral-800 dark:bg-neutral-950">
+                  {chapter.chapterIntro && (
+                    <p className="leading-relaxed text-neutral-700 dark:text-neutral-300">
+                      <strong>Chapter Overview:</strong> <MathText text={chapter.chapterIntro} />
+                    </p>
+                  )}
+                  {chapter.prerequisites && chapter.prerequisites.length > 0 && (
+                    <p className="text-neutral-600 dark:text-neutral-400">
+                      <strong>Prerequisites:</strong> {chapter.prerequisites.join(' · ')}
+                    </p>
+                  )}
+                </div>
+              )}
               <div className="flex flex-wrap items-start justify-between gap-4 border-b border-neutral-200 pb-4 dark:border-neutral-800">
                 <div>
                   <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                    Grade {chapter.grade} · {chapter.subjectName} · {board}
-                    {chapter.isSampleTestPack ? ' · Sample Test Draft' : ''}
+                    Grade {chapter.grade} · {chapter.subjectName} · {prefs.board} · Ch{' '}
+                    {chapter.chapterNumber}
+                    {chapter.publicationStatus !== 'published' ? ` · ${chapter.publicationStatus}` : ''}
                   </p>
-                  <h2 className="mt-1 text-xl font-bold text-neutral-900 dark:text-neutral-100">
+                  <h2 className="font-display mt-1 text-xl font-bold text-neutral-900 dark:text-neutral-100">
                     {concept.title}
                   </h2>
                 </div>
@@ -546,15 +1556,12 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
                         lines: [
                           concept.simpleExplanation,
                           ...(concept.formulas[0]
-                            ? [`Formula: ${concept.formulas[0].expression} (${concept.formulas[0].description})`]
-                            : []),
-                          ...(concept.quickRevisionSummary.length > 0
-                            ? [`Key Summary: ${concept.quickRevisionSummary.join(' · ')}`]
+                            ? [`Formula: ${concept.formulas[0].expression}`]
                             : []),
                         ],
                       })
                     }
-                    className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-semibold text-[#1B6B46] hover:bg-neutral-50 dark:border-neutral-700 dark:text-[#6CD19B] dark:hover:bg-neutral-800"
+                    className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-semibold text-[#1B6B46] dark:border-neutral-700 dark:text-[#6CD19B]"
                   >
                     <MessageCircle className="h-3.5 w-3.5" />
                     Share Card
@@ -565,7 +1572,7 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
                       <button
                         type="button"
                         onClick={() => setGuidedMode(true)}
-                        className={`shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-semibold ${
+                        className={`rounded-md px-3 py-1 text-xs font-semibold ${
                           guidedMode
                             ? 'bg-white text-[#1B6B46] shadow-sm dark:bg-neutral-900 dark:text-[#6CD19B]'
                             : 'text-neutral-600 dark:text-neutral-300'
@@ -576,13 +1583,13 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
                       <button
                         type="button"
                         onClick={() => setGuidedMode(false)}
-                        className={`shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-semibold ${
+                        className={`rounded-md px-3 py-1 text-xs font-semibold ${
                           !guidedMode
                             ? 'bg-white text-[#1B6B46] shadow-sm dark:bg-neutral-900 dark:text-[#6CD19B]'
                             : 'text-neutral-600 dark:text-neutral-300'
                         }`}
                       >
-                        Full Textbook
+                        Full Textbook &amp; Flashcards
                       </button>
                     </div>
                   )}
@@ -590,9 +1597,9 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
               </div>
 
               {guidedMode && activeMicroCard ? (
-                <div className="space-y-5">
+                <div className="mt-5 space-y-5">
                   <div className="space-y-2">
-                    <div className="flex justify-between text-xs text-neutral-500 dark:text-neutral-400">
+                    <div className="flex justify-between text-xs text-neutral-500">
                       <span>
                         Step {safeMicroStep + 1} of {microCards.length}
                       </span>
@@ -600,28 +1607,23 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
                         {Math.round(((safeMicroStep + 1) / microCards.length) * 100)}%
                       </span>
                     </div>
-                    <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-100 dark:bg-neutral-800">
-                      <div
-                        className="h-full bg-[#1B6B46] transition-all duration-200 dark:bg-[#6CD19B]"
-                        style={{
-                          width: `${((safeMicroStep + 1) / microCards.length) * 100}%`,
-                        }}
-                      />
-                    </div>
+                    <MotionProgressTrack
+                      percent={((safeMicroStep + 1) / microCards.length) * 100}
+                    />
                   </div>
 
-                  <div className="space-y-4 py-2">
+                  <div className="space-y-4">
                     <h3 className="text-base font-semibold text-[#1B6B46] dark:text-[#6CD19B]">
                       {activeMicroCard.stageTitle}
                     </h3>
-                    <p className="text-base leading-relaxed text-neutral-800 dark:text-neutral-200">
-                      {activeMicroCard.body}
-                    </p>
+                    <div className="text-base leading-relaxed text-neutral-800 dark:text-neutral-200">
+                      <MathText text={activeMicroCard.body} />
+                    </div>
 
                     {activeMicroCard.quickCheckQuestion && (
                       <div className="space-y-3 border-t border-neutral-200 pt-4 dark:border-neutral-800">
                         <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-                          {activeMicroCard.quickCheckQuestion}
+                          <MathText text={activeMicroCard.quickCheckQuestion} />
                         </p>
                         <div className="grid gap-2 sm:grid-cols-3">
                           {activeMicroCard.quickCheckOptions?.map((opt) => (
@@ -635,7 +1637,7 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
                                   : 'border-neutral-200 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800'
                               }`}
                             >
-                              {opt}
+                              <MathText text={opt} />
                             </button>
                           ))}
                         </div>
@@ -650,13 +1652,12 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
                             {microChoice === activeMicroCard.quickCheckAnswer ? (
                               <>
                                 <CheckCircle2 className="h-4 w-4" />
-                                Correct — clean intuition!
+                                Correct!
                               </>
                             ) : (
                               <>
                                 <XCircle className="h-4 w-4" />
-                                Not quite — correct answer is{' '}
-                                {activeMicroCard.quickCheckAnswer}.
+                                Correct answer: {activeMicroCard.quickCheckAnswer}
                               </>
                             )}
                           </p>
@@ -664,6 +1665,14 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
                       </div>
                     )}
                   </div>
+
+                  {/* Interactive Motion Graphic & Graph shown inline in Guided Mode too */}
+                  {concept.motionGraphics && concept.motionGraphics.length > 0 && (
+                    <MotionGraphicPlayer spec={concept.motionGraphics[0]} />
+                  )}
+                  {concept.graphs && concept.graphs.length > 0 && (
+                    <MathGraphView spec={concept.graphs[0]} />
+                  )}
 
                   <div className="flex items-center justify-between border-t border-neutral-200 pt-4 dark:border-neutral-800">
                     <button
@@ -685,7 +1694,7 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
                           setMicroStep((s) => Math.min(microCards.length - 1, s + 1));
                           setMicroChoice(null);
                         }}
-                        className="rounded-lg bg-[#1B6B46] px-4 py-2 text-xs font-semibold text-white hover:bg-[#155537]"
+                        className="rounded-lg bg-[#1B6B46] px-4 py-2 text-xs font-semibold text-white"
                       >
                         Next Step
                       </button>
@@ -693,22 +1702,50 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
                       <button
                         type="button"
                         onClick={() => {
+                          markConceptCompleted(concept.id);
                           bumpDailyGoalProgress(0, 1);
-                          setMode('practice');
-                          resetPractice(0);
+                          setSection('practice');
                         }}
-                        className="rounded-lg bg-[#1B6B46] px-4 py-2 text-xs font-semibold text-white hover:bg-[#155537]"
+                        className="rounded-lg bg-[#1B6B46] px-4 py-2 text-xs font-semibold text-white"
                       >
-                        Complete 5-Min Lesson & Practise
+                        Complete Concept &amp; Practise
                       </button>
                     )}
                   </div>
                 </div>
               ) : (
-                <div className="space-y-6">
-                  <p className="text-base leading-relaxed text-neutral-800 dark:text-neutral-200">
-                    {concept.simpleExplanation}
-                  </p>
+                <div className="mt-5 space-y-6">
+                  {concept.learningObjectives && concept.learningObjectives.length > 0 && (
+                    <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-4 text-xs dark:border-neutral-800 dark:bg-neutral-950">
+                      <div className="font-bold text-neutral-900 dark:text-neutral-100">
+                        Learning Objectives (SLO Alignment)
+                      </div>
+                      <ul className="mt-1.5 list-disc space-y-1 pl-4 text-neutral-700 dark:text-neutral-300">
+                        {concept.learningObjectives.map((obj, idx) => (
+                          <li key={idx}>
+                            <MathText text={obj} />
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="space-y-3 text-base leading-relaxed text-neutral-800 dark:text-neutral-200">
+                    <MathText text={concept.simpleExplanation} />
+                    {concept.detailedExplanation && (
+                      <p className="text-sm leading-relaxed text-neutral-600 dark:text-neutral-300">
+                        <MathText text={concept.detailedExplanation} />
+                      </p>
+                    )}
+                  </div>
+
+                  {concept.motionGraphics?.map((mg) => (
+                    <MotionGraphicPlayer key={mg.id} spec={mg} />
+                  ))}
+
+                  {concept.graphs?.map((graph) => (
+                    <MathGraphView key={graph.id} spec={graph} />
+                  ))}
 
                   {concept.diagramSvg && (
                     <div
@@ -726,10 +1763,10 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
                         {concept.formulas.map((f, idx) => (
                           <div key={idx} className="rounded-lg bg-neutral-50 p-3 dark:bg-neutral-800">
                             <div className="font-mono-tabular text-base font-bold text-[#1B6B46] dark:text-[#6CD19B]">
-                              {f.expression}
+                              <MathText text={f.expression} />
                             </div>
                             <div className="mt-1 text-xs text-neutral-600 dark:text-neutral-300">
-                              {f.description}
+                              <MathText text={f.description} />
                               {f.unit ? ` · Unit: ${f.unit}` : ''}
                             </div>
                           </div>
@@ -737,476 +1774,455 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
                       </div>
                     </div>
                   )}
-                </div>
-              )}
 
-              {concept.glossaryHints.length > 0 && (
-                <div className="space-y-3 border-t border-neutral-200 pt-4 dark:border-neutral-800">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-                    <Volume2 className="h-4 w-4 text-[#1B6B46] dark:text-[#6CD19B]" />
-                    1-Tap Urdu Meaning Help (Tap any term)
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {concept.glossaryHints.map((g, idx) => (
-                      <button
-                        key={g.term}
-                        type="button"
-                        onClick={() => setActiveUrduIdx(activeUrduIdx === idx ? null : idx)}
-                        className={`rounded-lg border px-3 py-1.5 text-xs font-medium ${
-                          activeUrduIdx === idx
-                            ? 'border-[#1B6B46] bg-[#D6F0E1]/50 text-[#0A3320] dark:border-[#6CD19B] dark:bg-[#174F33] dark:text-white'
-                            : 'border-neutral-200 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800'
-                        }`}
-                      >
-                        {g.term}
-                      </button>
-                    ))}
-                  </div>
-                  {activeUrduIdx !== null && concept.glossaryHints[activeUrduIdx] && (
-                    <div className="rounded-lg bg-neutral-50 p-3 text-sm dark:bg-neutral-800">
-                      <div dir="rtl" className="text-base font-semibold text-neutral-900 dark:text-white">
-                        {concept.glossaryHints[activeUrduIdx].urduMeaning}
+                  {/* Interactive Flashcards */}
+                  {activeFlashcard && (
+                    <div className="space-y-2 border-t border-neutral-200 pt-4 dark:border-neutral-800">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-bold text-neutral-900 dark:text-neutral-100">
+                          Recall Flashcards ({safeFlashcardIdx + 1}/{flashcards.length})
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            disabled={safeFlashcardIdx <= 0}
+                            onClick={() => {
+                              setFlashcardIdx((i) => Math.max(0, i - 1));
+                              setFlashcardFlipped(false);
+                            }}
+                            className="rounded border border-neutral-200 px-2 py-1 disabled:opacity-40 dark:border-neutral-700"
+                          >
+                            Prev
+                          </button>
+                          <button
+                            type="button"
+                            disabled={safeFlashcardIdx >= flashcards.length - 1}
+                            onClick={() => {
+                              setFlashcardIdx((i) => Math.min(flashcards.length - 1, i + 1));
+                              setFlashcardFlipped(false);
+                            }}
+                            className="rounded border border-neutral-200 px-2 py-1 disabled:opacity-40 dark:border-neutral-700"
+                          >
+                            Next
+                          </button>
+                        </div>
                       </div>
-                      <p className="mt-1 text-xs text-neutral-600 dark:text-neutral-300">
-                        {concept.glossaryHints[activeUrduIdx].simpleHint}
-                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setFlashcardFlipped((f) => !f)}
+                        className="w-full rounded-xl border border-neutral-200 bg-neutral-50 p-5 text-left transition hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-800"
+                      >
+                        <div className="text-[11px] font-semibold text-[#1B6B46] dark:text-[#6CD19B]">
+                          {flashcardFlipped ? 'Answer (Tap to Flip)' : 'Prompt (Tap to Reveal)'}
+                        </div>
+                        <div className="mt-1.5 text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+                          <MathText
+                            text={flashcardFlipped ? activeFlashcard.back : activeFlashcard.front}
+                          />
+                        </div>
+                      </button>
                     </div>
                   )}
-                </div>
-              )}
 
-              {concept.videoLinks.length > 0 && (
-                <div className="space-y-2 border-t border-neutral-200 pt-4 dark:border-neutral-800">
-                  <div className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-                    Curated Video Explanations (Requires Internet)
-                  </div>
-                  <div className="divide-y divide-neutral-200 dark:divide-neutral-800">
-                    {concept.videoLinks.map((v, idx) => (
-                      <div
-                        key={idx}
-                        className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-1 last:pb-1"
-                      >
-                        <div className="flex items-start gap-3">
-                          <PlayCircle className="mt-0.5 h-5 w-5 shrink-0 text-[#1B6B46] dark:text-[#6CD19B]" />
-                          <div>
-                            <div className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                              {v.title}
-                            </div>
-                            <div className="text-xs text-neutral-500 dark:text-neutral-400">
-                              {v.channelName} · {v.durationLabel} · {v.language.toUpperCase()}
-                            </div>
+                  {concept.workedExamplePrompt && (
+                    <div className="space-y-2 border-t border-neutral-200 pt-4 dark:border-neutral-800">
+                      <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+                        Worked Textbook Solution
+                      </h3>
+                      <p className="text-sm font-medium text-neutral-800 dark:text-neutral-200">
+                        <MathText text={concept.workedExamplePrompt} />
+                      </p>
+                      <ol className="list-decimal space-y-1 pl-5 text-xs text-neutral-700 dark:text-neutral-300">
+                        {concept.workedExampleSteps.map((step, i) => (
+                          <li key={i}>
+                            <MathText text={step} />
+                          </li>
+                        ))}
+                      </ol>
+                      {concept.workedExampleAnswer && (
+                        <div className="text-xs font-bold text-[#1B6B46] dark:text-[#6CD19B]">
+                          Final Answer: <MathText text={concept.workedExampleAnswer} />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {concept.commonMistake && (
+                    <div className="rounded-lg border border-amber-500/30 bg-[#FEF4E6] p-3 text-xs text-[#6B4E16] dark:bg-[#3B2810] dark:text-[#E6A756]">
+                      <div>
+                        <strong>Common Board Mistake:</strong> {concept.commonMistake}
+                      </div>
+                      {concept.commonMistakeCorrection && (
+                        <div className="mt-1">
+                          <strong>Fix:</strong> {concept.commonMistakeCorrection}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {concept.glossaryHints.length > 0 && (
+                    <div className="space-y-2 border-t border-neutral-200 pt-4 dark:border-neutral-800">
+                      <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+                        1-Tap Urdu Meaning Support
+                      </h3>
+                      <div className="flex flex-wrap gap-2">
+                        {concept.glossaryHints.map((g, idx) => (
+                          <button
+                            key={g.term}
+                            type="button"
+                            onClick={() =>
+                              setActiveUrduIdx((cur) => (cur === idx ? null : idx))
+                            }
+                            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium ${
+                              activeUrduIdx === idx
+                                ? 'border-[#1B6B46] bg-[#D6F0E1]/40 text-[#1B6B46] dark:border-[#6CD19B] dark:text-[#6CD19B]'
+                                : 'border-neutral-200 dark:border-neutral-700'
+                            }`}
+                          >
+                            <Volume2 className="h-3.5 w-3.5" />
+                            {g.term}
+                          </button>
+                        ))}
+                      </div>
+                      {activeUrduIdx !== null && concept.glossaryHints[activeUrduIdx] && (
+                        <div className="rounded-lg bg-neutral-50 p-3 text-xs dark:bg-neutral-800">
+                          <div dir="rtl" className="text-base font-bold">
+                            {concept.glossaryHints[activeUrduIdx].urduMeaning}
+                          </div>
+                          <div className="mt-1 text-neutral-600 dark:text-neutral-300">
+                            {concept.glossaryHints[activeUrduIdx].simpleHint}
                           </div>
                         </div>
-                        <a
-                          href={v.youtubeUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-semibold text-[#1B6B46] hover:bg-neutral-50 dark:border-neutral-700 dark:text-[#6CD19B] dark:hover:bg-neutral-800"
-                        >
-                          Watch on YouTube
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </a>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <p className="border-t border-neutral-200 pt-3 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
-                Source: {concept.sourceBook} · {concept.sourcePage}
-              </p>
-            </div>
-          )}
-
-          {/* PRACTICE ENGINE */}
-          {mode === 'practice' && (
-            <div className="space-y-5">
-              {showPostSessionAd ? (
-                <div className="space-y-4 py-4">
-                  <h3 className="text-lg font-bold text-neutral-900 dark:text-neutral-100">
-                    Practice Set Complete
-                  </h3>
-                  <p className="text-sm text-neutral-600 dark:text-neutral-300">
-                    All attempts were logged to Analytics & Spaced Revision (1d → 3d → 7d).
-                  </p>
-                  {showAdPreview && (
-                    <div className="rounded-xl border border-dashed border-amber-500/60 bg-amber-50/70 p-4 text-xs dark:bg-amber-950/30">
-                      <div className="font-semibold text-amber-800 dark:text-amber-300">
-                        Post-Session Interstitial / Rewarded Ad Slot (Respectful Timing)
-                      </div>
-                      <p className="mt-1 text-neutral-700 dark:text-neutral-300">
-                        Only appears after finishing a full set—never mid-question or during reading. Also supports optional Rewarded Video to unlock extra Timed Mock Papers.
-                      </p>
-                    </div>
-                  )}
-                  <div className="flex flex-wrap gap-2.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowPostSessionAd(false);
-                        resetPractice(0);
-                      }}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-[#1B6B46] px-4 py-2 text-xs font-semibold text-white"
-                    >
-                      <RotateCcw className="h-3.5 w-3.5" />
-                      Practise Again
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setShareCard({
-                          kicker: `${board} · Grade ${chapter.grade}`,
-                          title: `Completed ${chapter.title} Practice`,
-                          highlightMetric: `${questions.length} Questions Practised`,
-                          lines: [
-                            `Subject: ${chapter.subjectName}`,
-                            `Daily Streak: ${dailyGoal.currentStreakDays} day(s)`,
-                            `Today's Progress: ${dailyGoal.todayQuestionsCompleted}/${dailyGoal.dailyQuestionTarget} Qs`,
-                          ],
-                        })
-                      }
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 px-4 py-2 text-xs font-semibold text-[#1B6B46] dark:border-neutral-700 dark:text-[#6CD19B]"
-                    >
-                      <MessageCircle className="h-3.5 w-3.5" />
-                      Share Progress on WhatsApp
-                    </button>
-                  </div>
-                </div>
-              ) : currentQ ? (
-                <>
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-200 pb-3 dark:border-neutral-800">
-                    <span className="text-xs text-neutral-500 dark:text-neutral-400">
-                      Question {qIndex + 1} of {questions.length} · Level {currentQ.difficulty} ·{' '}
-                      {currentQ.questionType.replace('_', ' ')} ·{' '}
-                      {currentQ.sourceType.replaceAll('_', ' ')}
-                    </span>
-                    <span className="font-mono-tabular text-xs font-semibold text-[#1B6B46] dark:text-[#6CD19B]">
-                      {currentQ.marks} {currentQ.marks === 1 ? 'mark' : 'marks'}
-                    </span>
-                  </div>
-
-                  <h3 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">
-                    {currentQ.statement}
-                  </h3>
-
-                  {!submitted && currentQ.hints.length > 0 && (
-                    <div className="space-y-2">
-                      {hintsShown > 0 && (
-                        <div className="space-y-1 rounded-lg bg-neutral-50 p-3 text-xs text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
-                          {currentQ.hints.slice(0, hintsShown).map((h, i) => (
-                            <p key={i}>
-                              Hint {i + 1}: {h}
-                            </p>
-                          ))}
-                        </div>
-                      )}
-                      {hintsShown < currentQ.hints.length && (
-                        <button
-                          type="button"
-                          onClick={() => setHintsShown((h) => h + 1)}
-                          className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#1B6B46] dark:text-[#6CD19B]"
-                        >
-                          <Lightbulb className="h-3.5 w-3.5" />
-                          Show Progressive Hint ({hintsShown + 1}/{currentQ.hints.length})
-                        </button>
                       )}
                     </div>
                   )}
 
-                  {currentQ.options.length > 0 ? (
-                    <div className="space-y-2">
-                      {currentQ.options.map((opt) => (
-                        <label
-                          key={opt}
-                          className={`flex cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 text-sm ${
-                            selectedOption === opt
-                              ? 'border-[#1B6B46] bg-[#D6F0E1]/35 dark:border-[#6CD19B] dark:bg-[#174F33]/40'
-                              : 'border-neutral-200 dark:border-neutral-700'
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="sandbox_opt"
-                            disabled={submitted}
-                            checked={selectedOption === opt}
-                            onChange={() => setSelectedOption(opt)}
-                            className="accent-[#1B6B46]"
-                          />
-                          <span>{opt}</span>
-                        </label>
-                      ))}
-                    </div>
-                  ) : currentQ.questionType === 'short_answer' ||
-                    currentQ.questionType === 'long_answer' ? (
-                    <div className="space-y-3 rounded-lg border border-neutral-200 p-4 text-sm dark:border-neutral-800">
-                      <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                        Write on paper first, then tick the marking points you included honestly:
-                      </p>
-                      <p className="font-medium text-neutral-900 dark:text-neutral-100">
-                        Model Answer: {currentQ.correctAnswer}
-                      </p>
-                      <div className="space-y-1.5">
-                        {(currentQ.markingPoints.length > 0
-                          ? currentQ.markingPoints
-                          : ['My written answer matches the key points in the model answer above.']
-                        ).map((pt, i) => (
-                          <label key={i} className="flex items-start gap-2 text-xs">
-                            <input
-                              type="checkbox"
-                              disabled={submitted}
-                              checked={checkedPoints.includes(i)}
-                              onChange={(e) =>
-                                setCheckedPoints((prev) =>
-                                  e.target.checked
-                                    ? [...prev, i]
-                                    : prev.filter((x) => x !== i),
-                                )
-                              }
-                              className="mt-0.5 accent-[#1B6B46]"
-                            />
-                            <span>{pt}</span>
-                          </label>
+                  {concept.videoLinks.length > 0 && (
+                    <div className="space-y-2 border-t border-neutral-200 pt-4 dark:border-neutral-800">
+                      <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+                        Curated Explanation Videos
+                      </h3>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {concept.videoLinks.map((v) => (
+                          <a
+                            key={v.youtubeUrl}
+                            href={v.youtubeUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="flex items-center justify-between rounded-lg border border-neutral-200 p-3 text-xs hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+                          >
+                            <div className="flex items-center gap-2">
+                              <PlayCircle className="h-4 w-4 text-[#1B6B46] dark:text-[#6CD19B]" />
+                              <div>
+                                <div className="font-semibold">{v.title}</div>
+                                <div className="text-neutral-500">
+                                  {v.channelName} · {v.durationLabel}
+                                </div>
+                              </div>
+                            </div>
+                            <ExternalLink className="h-3.5 w-3.5 text-neutral-400" />
+                          </a>
                         ))}
                       </div>
                     </div>
-                  ) : (
-                    <input
-                      value={typedAnswer}
-                      disabled={submitted}
-                      onChange={(e) => setTypedAnswer(e.target.value)}
-                      placeholder={
-                        currentQ.questionType === 'numerical'
-                          ? 'Enter numerical answer with unit (e.g. 54 m)'
-                          : 'Enter your answer'
-                      }
-                      className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
-                    />
                   )}
 
-                  {practiceError && (
-                    <div className="flex items-center gap-2 rounded-lg border border-[#B9382C]/35 bg-[#FCECEA] px-3 py-2 text-xs font-medium text-[#B9382C] dark:bg-[#3A1B18] dark:text-[#F28B82]">
-                      <ShieldAlert className="h-4 w-4 shrink-0" />
-                      <span>{practiceError}</span>
-                    </div>
-                  )}
-
-                  {!submitted ? (
+                  <div className="flex items-center justify-between border-t border-neutral-200 pt-4 text-xs dark:border-neutral-800">
+                    <span className="text-neutral-500">
+                      Source: {concept.sourceBook} ({concept.sourcePage})
+                    </span>
                     <button
                       type="button"
-                      onClick={handleSubmitQuestion}
-                      className="min-h-10 rounded-lg bg-[#1B6B46] px-4 py-2 text-xs font-semibold text-white hover:bg-[#155537]"
+                      onClick={() => {
+                        markConceptCompleted(concept.id);
+                        bumpDailyGoalProgress(0, 1);
+                        setSection('practice');
+                      }}
+                      className="rounded-lg bg-[#1B6B46] px-4 py-2 font-semibold text-white"
                     >
-                      Submit Attempt
+                      Mark Studied &amp; Practise
                     </button>
-                  ) : (
-                    <div className="space-y-3 border-t border-neutral-200 pt-4 text-sm dark:border-neutral-800">
-                      <div
-                        className={`flex items-center gap-2 font-semibold ${
-                          isCorrect
-                            ? 'text-[#1E7E4E] dark:text-[#6CD19B]'
-                            : 'text-[#B9382C] dark:text-[#F28B82]'
-                        }`}
-                      >
-                        {isCorrect ? (
-                          <CheckCircle2 className="h-4 w-4" />
-                        ) : (
-                          <ShieldAlert className="h-4 w-4" />
-                        )}
-                        {isCorrect
-                          ? 'Correct — Spaced revision advanced'
-                          : 'Incorrect — Scheduled for 1-day revision'}
-                      </div>
-
-                      {!isCorrect &&
-                        selectedOption &&
-                        currentQ.optionMisconceptions?.[selectedOption] && (
-                          <p className="text-xs text-[#B9382C] dark:text-[#F28B82]">
-                            Why your choice is wrong: {currentQ.optionMisconceptions[selectedOption]}
-                          </p>
-                        )}
-
-                      <p className="text-xs text-neutral-700 dark:text-neutral-300">
-                        <strong>Answer:</strong> {currentQ.correctAnswer} — {currentQ.explanation}
-                      </p>
-
-                      {currentQ.numericalSteps && (
-                        <div className="space-y-1 rounded-lg bg-neutral-50 p-3 text-xs dark:bg-neutral-800">
-                          <div className="font-semibold text-[#1B6B46] dark:text-[#6CD19B]">
-                            6-Step Numerical Solution
-                          </div>
-                          <div>Given: {currentQ.numericalSteps.given.join(', ')}</div>
-                          <div>Required: {currentQ.numericalSteps.required}</div>
-                          <div>Formula: {currentQ.numericalSteps.formula}</div>
-                          <div>Substitution: {currentQ.numericalSteps.substitution}</div>
-                          <div>Calculation: {currentQ.numericalSteps.calculation}</div>
-                          <div className="font-semibold">
-                            Answer: {currentQ.numericalSteps.answerWithUnit}
-                          </div>
-                        </div>
-                      )}
-
-                      <div className="flex flex-wrap items-center gap-2.5">
-                        <button
-                          type="button"
-                          onClick={handleNextQuestion}
-                          className="rounded-lg bg-[#1B6B46] px-4 py-2 text-xs font-semibold text-white"
-                        >
-                          {qIndex + 1 < questions.length ? 'Next Question' : 'Finish Set'}
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setShareCard({
-                              kicker: `Grade ${chapter.grade} · ${chapter.subjectName}`,
-                              title: currentQ.statement,
-                              highlightMetric: `Answer: ${currentQ.correctAnswer}`,
-                              lines: currentQ.numericalSteps
-                                ? [
-                                    `Given: ${currentQ.numericalSteps.given.join(', ')}`,
-                                    `Formula: ${currentQ.numericalSteps.formula}`,
-                                    `Substitution: ${currentQ.numericalSteps.substitution}`,
-                                    `Answer: ${currentQ.numericalSteps.answerWithUnit}`,
-                                  ]
-                                : [currentQ.explanation],
-                            })
-                          }
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 px-3 py-2 text-xs font-semibold text-[#1B6B46] dark:border-neutral-700 dark:text-[#6CD19B]"
-                        >
-                          <MessageCircle className="h-3.5 w-3.5" />
-                          Share Solution Card
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <p className="text-sm text-neutral-500">No questions in this chapter yet.</p>
+                  </div>
+                </div>
               )}
             </div>
+          ) : (
+            <div className="rounded-xl border border-neutral-200 bg-white p-8 text-center text-xs text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900">
+              No chapters match the current filter. Reset filters above or upload a book.
+            </div>
           )}
+        </div>
+      )}
 
-          {/* DAILY 10-MCQ BOARD & MDCAT CHALLENGE */}
-          {mode === 'daily10' && (
-            <div className="space-y-5">
-              <div className="flex flex-wrap items-start justify-between gap-4 border-b border-neutral-200 pb-4 dark:border-neutral-800">
-                <div>
-                  <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                    {challengeTrack === 'mdcat'
-                      ? 'Isolated Entrance Prep · Never mixed into SSC/HSSC board scores'
-                      : `${board} · Grades 9–12 SSC/HSSC SLO Pattern`}
-                  </p>
-                  <h2 className="mt-0.5 text-lg font-bold text-neutral-900 dark:text-neutral-100">
-                    Daily 10-MCQ Challenge ({dailyGoal.todayDateIso})
-                  </h2>
-                </div>
+      {/* SECTION 3: PRACTICE (All 8 Formats) */}
+      {section === 'practice' && (
+        <div className="space-y-5 rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-800 dark:bg-neutral-900">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 pb-4 dark:border-neutral-800">
+            <div>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                Grade {chapter?.grade ?? prefs.targetGrade} · {chapter?.subjectName ?? 'All Subjects'}
+              </p>
+              <h2 className="text-lg font-bold text-neutral-900 dark:text-neutral-100">
+                Interactive Practice (8 KPK Question Formats)
+              </h2>
+            </div>
 
-                <div className="flex items-center gap-1 rounded-lg bg-neutral-100 p-1 dark:bg-neutral-800">
-                  <button
-                    type="button"
-                    onClick={() => resetDailyChallenge('board')}
-                    className={`shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-semibold ${
-                      challengeTrack === 'board'
-                        ? 'bg-white text-[#1B6B46] shadow-sm dark:bg-neutral-900 dark:text-[#6CD19B]'
-                        : 'text-neutral-600 dark:text-neutral-300'
-                    }`}
-                  >
-                    KPK Board (SSC/HSSC)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => resetDailyChallenge('mdcat')}
-                    className={`shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-semibold ${
-                      challengeTrack === 'mdcat'
-                        ? 'bg-white text-[#1B6B46] shadow-sm dark:bg-neutral-900 dark:text-[#6CD19B]'
-                        : 'text-neutral-600 dark:text-neutral-300'
-                    }`}
-                  >
-                    MDCAT (Isolated)
-                  </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                aria-label="Practice Chapter"
+                value={chapter?.chapterId ?? ''}
+                onChange={(e) => handleSelectChapter(e.target.value)}
+                className="min-h-9 rounded-lg border border-neutral-200 bg-white px-2.5 text-xs font-medium dark:border-neutral-700 dark:bg-neutral-800"
+              >
+                {trackChapters.map((ch) => (
+                  <option key={ch.chapterId} value={ch.chapterId}>
+                    G{ch.grade} Ch {ch.chapterNumber}: {ch.title} ({ch.questions.length})
+                  </option>
+                ))}
+              </select>
+
+              <select
+                aria-label="Filter Question Format"
+                value={practiceTypeFilter}
+                onChange={(e) => setPracticeTypeFilter(e.target.value)}
+                className="min-h-9 rounded-lg border border-neutral-200 bg-white px-2.5 text-xs font-medium dark:border-neutral-700 dark:bg-neutral-800"
+              >
+                <option value="ALL">All Formats</option>
+                <option value="mcq">MCQ</option>
+                <option value="multi_select">Multi-Select</option>
+                <option value="true_false">True / False</option>
+                <option value="fill_in">Fill-in-the-Blank</option>
+                <option value="matching">Matching</option>
+                <option value="numerical">6-Step Numerical</option>
+                <option value="short_answer">Short Answer</option>
+                <option value="long_answer">Long Answer</option>
+              </select>
+            </div>
+          </div>
+
+          {chapter && !practiceSessionDone ? (
+            <StudentPracticeRunner
+              chapter={chapter}
+              questions={practiceQuestions}
+              board={prefs.board}
+              onAttemptRecorded={(q, ok) => {
+                bumpDailyGoalProgress(1, 0);
+                onRecordAttempt({
+                  id: `att_prac_${Date.now()}`,
+                  programmeId: q.programmeId,
+                  questionId: q.id,
+                  chapterId: chapter.chapterId,
+                  subjectName: chapter.subjectName,
+                  conceptTitle: concept?.title ?? chapter.title,
+                  isCorrect: ok,
+                  difficulty: q.difficulty,
+                  timestamp: new Date().toISOString(),
+                });
+              }}
+              onCompleteSession={() => setPracticeSessionDone(true)}
+              onShareCard={setShareCard}
+            />
+          ) : (
+            <div className="space-y-3 py-6 text-center">
+              <CheckCircle2 className="mx-auto h-7 w-7 text-[#1E7E4E] dark:text-[#6CD19B]" />
+              <div className="text-base font-bold text-neutral-900 dark:text-neutral-100">
+                Practice Set Complete!
+              </div>
+              <p className="text-xs text-neutral-600 dark:text-neutral-300">
+                All attempts are saved locally to update your Weak Areas and Exam Readiness metrics.
+              </p>
+              <button
+                type="button"
+                onClick={() => setPracticeSessionDone(false)}
+                className="rounded-lg bg-[#1B6B46] px-4 py-2 text-xs font-semibold text-white"
+              >
+                Practise Again
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* SECTION 4: PREPARATION (Readiness Indicator + Daily 10-MCQ + Past Papers + Checklist) */}
+      {section === 'preparation' && (
+        <div className="space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="flex items-center gap-1 rounded-lg bg-neutral-100 p-1 dark:bg-neutral-800">
+              {(
+                [
+                  ['overview', 'Exam Readiness & Checklist'],
+                  ['daily10', 'Daily 10-MCQ Revision'],
+                  ['pastpapers', 'Solved Past Papers'],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setPrepSubTab(id)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+                    prepSubTab === id
+                      ? 'bg-white text-[#1B6B46] shadow-sm dark:bg-neutral-900 dark:text-[#6CD19B]'
+                      : 'text-neutral-600 dark:text-neutral-300'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <span className="text-xs text-neutral-500">
+              Isolated Track:{' '}
+              <strong>
+                {prefs.programmeTrack === 'ssc_hssc'
+                  ? `KPK BISE (${prefs.board})`
+                  : prefs.programmeTrack.toUpperCase()}
+              </strong>
+            </span>
+          </div>
+
+          {prepSubTab === 'overview' && (
+            <div className="grid gap-6 lg:grid-cols-2">
+              {/* Honest Evidence-Based Readiness Indicator */}
+              <div className="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-800 dark:bg-neutral-900">
+                <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                  Evidence-Based Preparation Summary
+                </h3>
+                <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                  Calculated strictly from your recorded study coverage, practice accuracy, and
+                  completed exams—never guessed scores.
+                </p>
+
+                <div className="mt-4 grid grid-cols-2 gap-4 text-xs">
+                  <div className="border-t border-neutral-200 pt-3 dark:border-neutral-800">
+                    <div className="text-neutral-500">Concept Coverage</div>
+                    <div className="font-mono-tabular mt-1 text-xl font-bold text-neutral-900 dark:text-neutral-100">
+                      {readinessMetrics.coveragePct}%
+                    </div>
+                    <div className="font-mono-tabular text-[11px] text-neutral-500">
+                      {readinessMetrics.studiedConceptsCount}/{readinessMetrics.totalTrackConcepts}{' '}
+                      concepts studied
+                    </div>
+                  </div>
+                  <div className="border-t border-neutral-200 pt-3 dark:border-neutral-800">
+                    <div className="text-neutral-500">Practice Accuracy</div>
+                    <div className="font-mono-tabular mt-1 text-xl font-bold text-[#1B6B46] dark:text-[#6CD19B]">
+                      {readinessMetrics.accuracyPct}%
+                    </div>
+                    <div className="font-mono-tabular text-[11px] text-neutral-500">
+                      {readinessMetrics.attemptsCount} total attempt(s)
+                    </div>
+                  </div>
+                  <div className="border-t border-neutral-200 pt-3 dark:border-neutral-800">
+                    <div className="text-neutral-500">Published Chapters</div>
+                    <div className="font-mono-tabular mt-1 text-xl font-bold text-neutral-900 dark:text-neutral-100">
+                      {readinessMetrics.publishedCount}/{readinessMetrics.totalChapters}
+                    </div>
+                    <div className="text-[11px] text-neutral-500">Verified in active track</div>
+                  </div>
+                  <div className="border-t border-neutral-200 pt-3 dark:border-neutral-800">
+                    <div className="text-neutral-500">Completed Exams</div>
+                    <div className="font-mono-tabular mt-1 text-xl font-bold text-neutral-900 dark:text-neutral-100">
+                      {readinessMetrics.completedExamsCount}
+                    </div>
+                    <div className="text-[11px] text-neutral-500">Timed or untimed papers</div>
+                  </div>
                 </div>
               </div>
 
+              {/* Board Exam Checklist */}
+              <div className="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-800 dark:bg-neutral-900">
+                <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                  {prefs.board} Exam Preparation Checklist
+                </h3>
+                <div className="mt-3 space-y-2.5 text-xs">
+                  {BOARD_PREP_CHECKLIST.map((item) => {
+                    const checked = Boolean(prefs.prepChecklist[item]);
+                    return (
+                      <label key={item} className="flex cursor-pointer items-start gap-2.5">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) =>
+                            setPrefs((prev) => ({
+                              ...prev,
+                              prepChecklist: {
+                                ...prev.prepChecklist,
+                                [item]: e.target.checked,
+                              },
+                            }))
+                          }
+                          className="mt-0.5 accent-[#1B6B46]"
+                        />
+                        <span
+                          className={
+                            checked
+                              ? 'text-neutral-400 line-through'
+                              : 'text-neutral-800 dark:text-neutral-200'
+                          }
+                        >
+                          {item}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {prepSubTab === 'daily10' && (
+            <div className="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-800 dark:bg-neutral-900">
               {challengeFinished ? (
                 <div className="space-y-4 py-3">
                   <div className="flex items-center gap-2 text-base font-bold text-[#1B6B46] dark:text-[#6CD19B]">
                     <ShieldCheck className="h-5 w-5" />
                     Daily 10-MCQ Complete
                   </div>
-                  <div className="font-mono-tabular text-3xl font-bold text-neutral-900 dark:text-white">
-                    {challengeScore} / {challengeQuestions.length} Correct (
-                    {Math.round((challengeScore / Math.max(1, challengeQuestions.length)) * 100)}%)
+                  <div className="font-mono-tabular text-3xl font-bold">
+                    {challengeScore} / {challengeQuestions.length} Correct
                   </div>
-                  <p className="text-xs text-neutral-600 dark:text-neutral-300">
-                    Your 5-minute daily goal and streak are updated locally. Track:{' '}
-                    {challengeTrack === 'mdcat'
-                      ? 'MDCAT Admission Prep (Isolated)'
-                      : 'KPK Board SSC/HSSC'}
-                    .
-                  </p>
-                  <div className="flex flex-wrap gap-2.5">
+                  <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
                       onClick={() =>
                         setShareCard({
-                          kicker:
-                            challengeTrack === 'mdcat'
-                              ? 'Daily 10-MCQ MDCAT Challenge'
-                              : `Daily 10-MCQ Board Challenge (${board})`,
+                          kicker: isAdmissionTrack
+                            ? `${prefs.programmeTrack.toUpperCase()} Challenge`
+                            : `KPK BISE (${prefs.board}) Daily 10`,
                           title: `Today's Score (${dailyGoal.todayDateIso})`,
-                          highlightMetric: `${challengeScore} / ${challengeQuestions.length} (${Math.round(
-                            (challengeScore / Math.max(1, challengeQuestions.length)) * 100,
-                          )}%)`,
-                          lines: [
-                            `Current Study Streak: ${dailyGoal.currentStreakDays} day(s)`,
-                            `Track: ${
-                              challengeTrack === 'mdcat'
-                                ? 'MDCAT Entrance Prep'
-                                : 'KPK BISE SSC/HSSC'
-                            }`,
-                          ],
+                          highlightMetric: `${challengeScore} / ${challengeQuestions.length}`,
+                          lines: [`Current Streak: ${dailyGoal.currentStreakDays} day(s)`],
                         })
                       }
                       className="inline-flex items-center gap-1.5 rounded-lg bg-[#1B6B46] px-4 py-2 text-xs font-semibold text-white"
                     >
                       <MessageCircle className="h-3.5 w-3.5" />
-                      Share Score on WhatsApp
+                      Share Score
                     </button>
                     <button
                       type="button"
-                      onClick={() => resetDailyChallenge(challengeTrack)}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 px-4 py-2 text-xs font-semibold text-neutral-800 dark:border-neutral-700 dark:text-neutral-100"
+                      onClick={resetDailyChallenge}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 px-4 py-2 text-xs font-semibold dark:border-neutral-700"
                     >
                       <RotateCcw className="h-3.5 w-3.5" />
-                      Retake Challenge
+                      Retake
                     </button>
                   </div>
                 </div>
               ) : activeChallengeQ ? (
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400">
+                  <div className="flex justify-between text-xs text-neutral-500">
                     <span>
                       Question {challengeIdx + 1} of {challengeQuestions.length} · Grade{' '}
-                      {activeChallengeQ.grade} · Level {activeChallengeQ.difficulty}
+                      {activeChallengeQ.grade}
                     </span>
                     <span className="font-mono-tabular font-semibold text-[#1B6B46] dark:text-[#6CD19B]">
                       Score: {challengeScore}
                     </span>
                   </div>
-
-                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-neutral-100 dark:bg-neutral-800">
-                    <div
-                      className="h-full bg-[#1B6B46] transition-all duration-200 dark:bg-[#6CD19B]"
-                      style={{
-                        width: `${((challengeIdx + 1) / challengeQuestions.length) * 100}%`,
-                      }}
-                    />
-                  </div>
-
                   <h3 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">
-                    {activeChallengeQ.statement}
+                    <MathText text={activeChallengeQ.statement} />
                   </h3>
-
                   <div className="space-y-2">
                     {activeChallengeQ.options.map((opt) => (
                       <label
@@ -1225,53 +2241,58 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
                           onChange={() => setChallengeSelected(opt)}
                           className="accent-[#1B6B46]"
                         />
-                        <span>{opt}</span>
+                        <MathText text={opt} />
                       </label>
                     ))}
                   </div>
-
                   {!challengeSubmitted ? (
                     <button
                       type="button"
                       disabled={!challengeSelected}
-                      onClick={handleSubmitChallengeQuestion}
+                      onClick={() => {
+                        const ok = challengeSelected === activeChallengeQ.correctAnswer;
+                        setChallengeSubmitted(true);
+                        if (ok) setChallengeScore((s) => s + 1);
+                        bumpDailyGoalProgress(1, 0);
+                        onRecordAttempt({
+                          id: `att_daily_${Date.now()}`,
+                          programmeId: prefs.programmeTrack,
+                          questionId: activeChallengeQ.id,
+                          chapterId: activeChallengeQ.chapterId,
+                          subjectName: isAdmissionTrack
+                            ? `${prefs.programmeTrack.toUpperCase()} Daily 10`
+                            : 'KPK Board Daily 10',
+                          conceptTitle: 'Daily Revision',
+                          isCorrect: ok,
+                          difficulty: activeChallengeQ.difficulty,
+                          timestamp: new Date().toISOString(),
+                        });
+                      }}
                       className="rounded-lg bg-[#1B6B46] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
                     >
                       Check Answer
                     </button>
                   ) : (
-                    <div className="space-y-2.5 border-t border-neutral-200 pt-3 text-xs dark:border-neutral-800">
-                      <div
-                        className={`flex items-center gap-1.5 font-semibold ${
-                          challengeSelected === activeChallengeQ.correctAnswer
-                            ? 'text-[#1E7E4E] dark:text-[#6CD19B]'
-                            : 'text-[#B9382C] dark:text-[#F28B82]'
-                        }`}
-                      >
-                        {challengeSelected === activeChallengeQ.correctAnswer ? (
-                          <>
-                            <CheckCircle2 className="h-4 w-4" />
-                            Correct
-                          </>
-                        ) : (
-                          <>
-                            <XCircle className="h-4 w-4" />
-                            Incorrect — Correct answer: {activeChallengeQ.correctAnswer}
-                          </>
-                        )}
+                    <div className="space-y-2 border-t border-neutral-200 pt-3 text-xs dark:border-neutral-800">
+                      <div className="font-bold">
+                        {challengeSelected === activeChallengeQ.correctAnswer
+                          ? 'Correct!'
+                          : `Correct Answer: ${activeChallengeQ.correctAnswer}`}
                       </div>
-                      {challengeSelected !== activeChallengeQ.correctAnswer &&
-                        activeChallengeQ.optionMisconceptions?.[challengeSelected] && (
-                          <p className="text-[#B9382C] dark:text-[#F28B82]">
-                            Misconception: {activeChallengeQ.optionMisconceptions[challengeSelected]}
-                          </p>
-                        )}
                       <p className="text-neutral-600 dark:text-neutral-300">
                         {activeChallengeQ.explanation}
                       </p>
                       <button
                         type="button"
-                        onClick={handleNextChallengeQuestion}
+                        onClick={() => {
+                          if (challengeIdx + 1 < challengeQuestions.length) {
+                            setChallengeIdx((i) => i + 1);
+                            setChallengeSelected('');
+                            setChallengeSubmitted(false);
+                          } else {
+                            setChallengeFinished(true);
+                          }
+                        }}
                         className="rounded-lg bg-[#1B6B46] px-4 py-2 text-xs font-semibold text-white"
                       >
                         {challengeIdx + 1 < challengeQuestions.length
@@ -1285,287 +2306,508 @@ export function StudentPreview({ chapters, onRecordAttempt }: StudentPreviewProp
             </div>
           )}
 
-          {/* CHAPTER-WISE SOLVED PAST PAPER BROWSER */}
-          {mode === 'pastpapers' && (
-            <div className="space-y-5">
-              <div className="border-b border-neutral-200 pb-4 dark:border-neutral-800">
-                <h2 className="text-lg font-bold text-neutral-900 dark:text-neutral-100">
-                  Chapter-Wise Solved Past Paper Browser
-                </h2>
-                <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
-                  Filter solved KPK BISE model & practice questions by board, grade, subject, and type. Verified source labels appear only when supplied; no question is guaranteed on future papers.
-                </p>
-
-                <div className="mt-4 grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
-                  <select
-                    aria-label="Filter by BISE Board"
-                    value={ppBoardFilter}
-                    onChange={(e) => setPpBoardFilter(e.target.value)}
-                    className="rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-800"
-                  >
-                    <option value="ALL">All 8 KPK BISE Boards</option>
-                    {KPK_BOARDS.map((b) => (
-                      <option key={b} value={b}>
-                        {b}
-                      </option>
-                    ))}
-                  </select>
-
-                  <select
-                    aria-label="Filter by Grade"
-                    value={ppGradeFilter}
-                    onChange={(e) => setPpGradeFilter(e.target.value)}
-                    className="rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-800"
-                  >
-                    <option value="ALL">All Grades (9–12)</option>
-                    <option value="9">Grade 9 (SSC I)</option>
-                    <option value="10">Grade 10 (SSC II)</option>
-                    <option value="11">Grade 11 (HSSC I)</option>
-                    <option value="12">Grade 12 (HSSC II)</option>
-                  </select>
-
-                  <select
-                    aria-label="Filter by Subject"
-                    value={ppSubjectFilter}
-                    onChange={(e) => setPpSubjectFilter(e.target.value)}
-                    className="rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-800"
-                  >
-                    <option value="ALL">All Subjects</option>
-                    {availableSubjects.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </select>
-
-                  <select
-                    aria-label="Filter by Question Type"
-                    value={ppTypeFilter}
-                    onChange={(e) => setPpTypeFilter(e.target.value)}
-                    className="rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-800"
-                  >
-                    <option value="ALL">All Question Types</option>
-                    <option value="mcq">MCQs</option>
-                    <option value="numerical">6-Step Numericals</option>
-                    <option value="short_answer">Short Answers</option>
-                    <option value="long_answer">Long Answers</option>
-                  </select>
-                </div>
+          {prepSubTab === 'pastpapers' && (
+            <div className="space-y-4 rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-800 dark:bg-neutral-900">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                  Solved Past Papers &amp; KPK Board Archive ({filteredPastPapers.length})
+                </h3>
+                <label className="flex cursor-pointer items-center gap-1.5 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={ppVerifiedOnly}
+                    onChange={(e) => setPpVerifiedOnly(e.target.checked)}
+                    className="accent-[#1B6B46]"
+                  />
+                  Official BISE Board Papers Only
+                </label>
               </div>
 
-              {filteredPastPapers.length === 0 ? (
-                <div className="space-y-3 py-6 text-center text-xs text-neutral-500 dark:text-neutral-400">
-                  <p>
-                    No solved questions match those exact filters. Try selecting "All 8 KPK BISE Boards" or resetting filters.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPpBoardFilter('ALL');
-                      setPpGradeFilter('ALL');
-                      setPpSubjectFilter('ALL');
-                      setPpTypeFilter('ALL');
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-semibold text-[#1B6B46] hover:bg-neutral-50 dark:border-neutral-700 dark:text-[#6CD19B] dark:hover:bg-neutral-800"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                    Reset Filters
-                  </button>
-                </div>
-              ) : (
-                <div className="divide-y divide-neutral-200 dark:divide-neutral-800">
-                  {filteredPastPapers.map(({ question, subjectName, chapterNumber, chapterTitle }) => {
-                    const isOpen = expandedPaperId === question.id;
-                    return (
-                      <div key={question.id} className="py-4 first:pt-1 last:pb-1">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div className="space-y-1">
-                            <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                              Grade {question.grade} · {subjectName} · Ch {chapterNumber}: {chapterTitle} ·{' '}
-                              {question.sourceBoardId ?? 'KPK Practice Standard'}
-                              {question.sourceYear ? ` (${question.sourceYear})` : ''} ·{' '}
-                              <span className="font-mono-tabular font-semibold">
-                                {question.marks} {question.marks === 1 ? 'mark' : 'marks'}
-                              </span>
-                            </p>
-                            <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-                              {question.statement}
-                            </h3>
-                          </div>
+              <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+                <select
+                  value={ppBoardFilter}
+                  onChange={(e) => setPpBoardFilter(e.target.value)}
+                  className="rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-800"
+                >
+                  <option value="ALL">All 8 KPK Boards</option>
+                  {KPK_BOARDS.map((b) => (
+                    <option key={b} value={b}>
+                      {b}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={ppGradeFilter}
+                  onChange={(e) => setPpGradeFilter(e.target.value)}
+                  className="rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-800"
+                >
+                  <option value="ALL">All Grades</option>
+                  {[9, 10, 11, 12].map((g) => (
+                    <option key={g} value={String(g)}>
+                      Grade {g}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={ppSubjectFilter}
+                  onChange={(e) => setPpSubjectFilter(e.target.value)}
+                  className="rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-800"
+                >
+                  <option value="ALL">All Subjects</option>
+                  {availablePpSubjects.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={ppTypeFilter}
+                  onChange={(e) => setPpTypeFilter(e.target.value)}
+                  className="rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-800"
+                >
+                  <option value="ALL">All Formats</option>
+                  <option value="mcq">MCQs</option>
+                  <option value="numerical">6-Step Numericals</option>
+                  <option value="short_answer">Short Answer</option>
+                  <option value="long_answer">Long Answer</option>
+                </select>
+              </div>
 
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setExpandedPaperId(isOpen ? null : question.id)
-                              }
-                              className="shrink-0 whitespace-nowrap rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-semibold text-neutral-800 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-100 dark:hover:bg-neutral-800"
-                            >
-                              {isOpen ? 'Hide Solution' : 'View Solution'}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setShareCard({
-                                  kicker: `${question.sourceBoardId ?? 'KPK Board'} · Grade ${question.grade}`,
-                                  title: question.statement,
-                                  highlightMetric: `Answer: ${question.correctAnswer}`,
-                                  lines: question.numericalSteps
-                                    ? [
-                                        `Given: ${question.numericalSteps.given.join(', ')}`,
-                                        `Formula: ${question.numericalSteps.formula}`,
-                                        `Substitution: ${question.numericalSteps.substitution}`,
-                                        `Answer: ${question.numericalSteps.answerWithUnit}`,
-                                      ]
-                                    : question.markingPoints.length > 0
-                                      ? question.markingPoints
-                                      : [question.explanation],
-                                })
-                              }
-                              aria-label="Share solved question on WhatsApp"
-                              className="shrink-0 rounded-lg border border-neutral-200 p-1.5 text-[#1B6B46] hover:bg-neutral-50 dark:border-neutral-700 dark:text-[#6CD19B] dark:hover:bg-neutral-800"
-                            >
-                              <MessageCircle className="h-3.5 w-3.5" />
-                            </button>
+              <div className="divide-y divide-neutral-200 dark:divide-neutral-800">
+                {filteredPastPapers.slice(0, 30).map(({ question, subjectName, chapterNumber, chapterTitle }) => {
+                  const isOpen = expandedPaperId === question.id;
+                  return (
+                    <div key={question.id} className="py-3.5">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <div className="text-[11px] text-neutral-500">
+                            Grade {question.grade} · {subjectName} · Ch {chapterNumber}:{' '}
+                            {chapterTitle} · {question.sourceBoardId ?? 'Practice Standard'}
+                            {question.sourceYear ? ` (${question.sourceYear})` : ''}
+                          </div>
+                          <div className="mt-0.5 text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+                            <MathText text={question.statement} />
                           </div>
                         </div>
+                        <button
+                          type="button"
+                          onClick={() => setExpandedPaperId(isOpen ? null : question.id)}
+                          className="rounded-lg border border-neutral-200 px-3 py-1 text-xs font-semibold dark:border-neutral-700"
+                        >
+                          {isOpen ? 'Hide Solution' : 'View Solution'}
+                        </button>
+                      </div>
+                      {isOpen && (
+                        <div className="mt-2.5 space-y-1.5 rounded-lg bg-neutral-50 p-3 text-xs dark:bg-neutral-800">
+                          <div>
+                            <strong>Answer:</strong> <MathText text={question.correctAnswer} />
+                          </div>
+                          <p>
+                            <MathText text={question.explanation} />
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
-                        {isOpen && (
-                          <div className="mt-3 space-y-2 rounded-lg bg-neutral-50 p-3.5 text-xs text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
-                            <p>
-                              <strong>Model Answer:</strong> {question.correctAnswer}
+      {/* SECTION 5: EXAMS (Section A/B/C Timer + localStorage Auto-Save + Grading) */}
+      {section === 'exams' && (
+        <div className="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-800 dark:bg-neutral-900">
+          {!examStarted ? (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 pb-4 dark:border-neutral-800">
+                <div>
+                  <h2 className="text-lg font-bold text-neutral-900 dark:text-neutral-100">
+                    KPK BISE Board Pattern &amp; Chapter Exams ({availableExams.length})
+                  </h2>
+                  <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                    Progress saves automatically on your device so load-shedding never erases answers.
+                  </p>
+                </div>
+                <label className="flex cursor-pointer items-center gap-2 text-xs font-medium">
+                  <input
+                    type="checkbox"
+                    checked={examTimed}
+                    onChange={(e) => setExamTimed(e.target.checked)}
+                    className="accent-[#1B6B46]"
+                  />
+                  Enable Countdown Timer
+                </label>
+              </div>
+
+              <div className="divide-y divide-neutral-200 dark:divide-neutral-800">
+                {availableExams.map((ex) => (
+                  <div key={ex.id} className="flex flex-wrap items-center justify-between gap-3 py-3.5">
+                    <div>
+                      <div className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                        {ex.title}
+                      </div>
+                      <div className="font-mono-tabular text-xs text-neutral-500">
+                        {ex.durationMinutes} min · {ex.totalMarks} marks · {ex.sections.length}{' '}
+                        sections
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => startExamAttempt(ex)}
+                      className="rounded-lg bg-[#1B6B46] px-4 py-2 text-xs font-semibold text-white hover:bg-[#155537]"
+                    >
+                      Start Paper
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : activeExam ? (
+            <div className="space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 pb-4 dark:border-neutral-800">
+                <div>
+                  <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-100">
+                    {activeExam.title}
+                  </h2>
+                  <div className="font-mono-tabular text-xs text-neutral-500">
+                    {activeExam.totalMarks} Total Marks · {prefs.board} Marking Pattern
+                  </div>
+                </div>
+                {examTimed && (
+                  <div className="font-mono-tabular inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 px-3 py-1.5 text-sm font-bold text-[#1B6B46] dark:border-neutral-700 dark:text-[#6CD19B]">
+                    <Clock className="h-4 w-4" />
+                    {String(Math.floor(examSecondsLeft / 60)).padStart(2, '0')}:
+                    {String(examSecondsLeft % 60).padStart(2, '0')}
+                  </div>
+                )}
+              </div>
+
+              {examFinished && (
+                <div className="space-y-3 rounded-lg border border-[#1B6B46]/30 bg-[#D6F0E1]/40 p-4 text-xs dark:bg-[#174F33]/40">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="font-bold text-[#1B6B46] dark:text-[#6CD19B]">
+                      {examScoringLoading
+                        ? 'Calculating Authoritative Exam Score...'
+                        : examScoreResult
+                          ? `Exam Score: ${examScoreResult.scoreObtained}/${examScoreResult.totalMarks} (${examScoreResult.percentage}%)`
+                          : 'Exam Graded — Review Keys & Marking Schemes Below'}
+                    </div>
+                    {examScoreResult?.idempotentReplay && (
+                      <span className="text-[11px] text-neutral-500">Synced (idempotent)</span>
+                    )}
+                  </div>
+
+                  {examScoringError && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-[#B4690E]/40 bg-[#FEF4E6] px-3 py-2 text-[#6B4E16] dark:bg-[#3B2810] dark:text-[#E6A756]">
+                      <span>{examScoringError}</span>
+                      <button
+                        type="button"
+                        onClick={() => void finishExamAttempt()}
+                        className="rounded bg-[#1B6B46] px-2.5 py-1 text-[11px] font-semibold text-white"
+                      >
+                        Retry Score Sync
+                      </button>
+                    </div>
+                  )}
+
+                  {examScoreResult && examScoreResult.sectionBreakdown.length > 0 && (
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      {examScoreResult.sectionBreakdown.map((sec) => (
+                        <div
+                          key={sec.label}
+                          className="rounded border border-neutral-200 bg-white p-2.5 dark:border-neutral-800 dark:bg-neutral-900"
+                        >
+                          <div className="truncate font-semibold">{sec.label}</div>
+                          <div className="font-mono-tabular mt-0.5 text-sm font-bold text-[#1B6B46] dark:text-[#6CD19B]">
+                            {sec.obtained}/{sec.possible} marks
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {examScoreResult && examScoreResult.weakTopics.length > 0 && (
+                    <div className="space-y-1.5 border-t border-[#1B6B46]/20 pt-2">
+                      <div className="font-bold text-neutral-900 dark:text-neutral-100">
+                        Weak Concept Diagnosis — Recommended Revision
+                      </div>
+                      <div className="space-y-1.5">
+                        {examScoreResult.weakTopics.map((wt) => (
+                          <div
+                            key={wt.conceptId}
+                            className="flex flex-wrap items-center justify-between gap-2 rounded bg-white px-3 py-2 dark:bg-neutral-900"
+                          >
+                            <span>
+                              <strong>{wt.conceptTitle}</strong> · {wt.missedCount}/{wt.totalCount}{' '}
+                              missed ({wt.accuracyPercent}% accuracy)
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (activeExam.chapterId) {
+                                  handleSelectChapter(activeExam.chapterId, 'practice');
+                                } else {
+                                  setSection('practice');
+                                }
+                              }}
+                              className="rounded border border-[#1B6B46] px-2.5 py-1 text-[11px] font-semibold text-[#1B6B46] dark:border-[#6CD19B] dark:text-[#6CD19B]"
+                            >
+                              Practise Concept
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {activeExam.sections.map((sec) => (
+                <div key={sec.label} className="space-y-3 border-t border-neutral-200 pt-4 first:border-t-0 dark:border-neutral-800">
+                  <h3 className="text-sm font-bold text-[#1B6B46] dark:text-[#6CD19B]">
+                    {sec.label}
+                  </h3>
+                  {sec.questionIds.map((qid, idx) => {
+                    const q = examQuestionLookup.get(qid);
+                    if (!q) return null;
+                    return (
+                      <div key={qid} className="space-y-2 rounded-lg border border-neutral-200 p-3 text-xs dark:border-neutral-800">
+                        <div className="flex justify-between gap-2 font-semibold">
+                          <span>
+                            Q{idx + 1}. <MathText text={q.statement} />
+                          </span>
+                          <span className="font-mono-tabular shrink-0 text-neutral-500">
+                            {sec.marksEach}m
+                          </span>
+                        </div>
+                        {q.options.length > 0 && (
+                          <div className="grid gap-1.5 sm:grid-cols-2">
+                            {q.options.map((opt) => (
+                              <label
+                                key={opt}
+                                className="flex cursor-pointer items-center gap-2 rounded border border-neutral-200 px-2.5 py-1.5 dark:border-neutral-700"
+                              >
+                                <input
+                                  type="radio"
+                                  name={`exam_${qid}`}
+                                  disabled={examFinished}
+                                  checked={examAnswers[qid] === opt}
+                                  onChange={() =>
+                                    setExamAnswers((prev) => ({ ...prev, [qid]: opt }))
+                                  }
+                                  className="accent-[#1B6B46]"
+                                />
+                                <MathText text={opt} />
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                        {examFinished && (
+                          <div className="rounded bg-neutral-50 p-2.5 dark:bg-neutral-800">
+                            <div className="font-semibold text-[#1B6B46] dark:text-[#6CD19B]">
+                              Official Key: <MathText text={q.correctAnswer} />
+                            </div>
+                            <p className="mt-1 text-neutral-600 dark:text-neutral-300">
+                              <MathText text={q.explanation} />
                             </p>
-                            <p>{question.explanation}</p>
-                            {question.numericalSteps && (
-                              <div className="space-y-1 border-t border-neutral-200 pt-2 dark:border-neutral-700">
-                                <div className="font-semibold text-[#1B6B46] dark:text-[#6CD19B]">
-                                  6-Step Numerical Solution
-                                </div>
-                                <div>Given: {question.numericalSteps.given.join(', ')}</div>
-                                <div>Required: {question.numericalSteps.required}</div>
-                                <div>Formula: {question.numericalSteps.formula}</div>
-                                <div>Substitution: {question.numericalSteps.substitution}</div>
-                                <div>Calculation: {question.numericalSteps.calculation}</div>
-                                <div className="font-semibold">
-                                  Answer: {question.numericalSteps.answerWithUnit}
-                                </div>
-                              </div>
-                            )}
-                            {question.markingPoints.length > 0 && (
-                              <div className="border-t border-neutral-200 pt-2 dark:border-neutral-700">
-                                <div className="font-semibold text-[#1B6B46] dark:text-[#6CD19B]">
-                                  Board Marking Scheme
-                                </div>
-                                <ul className="mt-1 list-disc space-y-0.5 pl-4">
-                                  {question.markingPoints.map((pt, i) => (
-                                    <li key={i}>{pt}</li>
-                                  ))}
-                                </ul>
-                              </div>
-                            )}
                           </div>
                         )}
                       </div>
                     );
                   })}
                 </div>
-              )}
-            </div>
-          )}
+              ))}
 
-          {/* FORMULA MATCH GAME */}
-          {mode === 'match' && (
-            <div className="space-y-4">
-              <div>
-                <h3 className="text-base font-bold text-neutral-900 dark:text-neutral-100">
-                  2-Minute Formula & Unit Match
-                </h3>
-                <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                  Tap a quantity on the left, then tap its matching formula or SI unit on the right.
-                </p>
-              </div>
-              {matchFeedback && (
-                <p className="text-xs font-semibold text-[#1B6B46] dark:text-[#6CD19B]">
-                  {matchFeedback}
-                </p>
-              )}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  {MATCH_PAIRS.map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      disabled={matchedIds.includes(p.id)}
-                      onClick={() => setMatchLeft(p.id)}
-                      className={`w-full rounded-lg border px-3 py-3 text-left text-xs font-semibold disabled:opacity-40 ${
-                        matchLeft === p.id
-                          ? 'border-[#1B6B46] bg-[#D6F0E1]/40 dark:border-[#6CD19B] dark:bg-[#174F33]/50'
-                          : 'border-neutral-200 dark:border-neutral-700'
-                      }`}
-                    >
-                      {p.left}
-                    </button>
-                  ))}
-                </div>
-                <div className="space-y-2">
-                  {[MATCH_PAIRS[2], MATCH_PAIRS[0], MATCH_PAIRS[3], MATCH_PAIRS[1]].map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      disabled={matchedIds.includes(p.id)}
-                      onClick={() => handleTapMatchRight(p.id, p.left)}
-                      className="w-full rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-3 text-left text-xs font-medium hover:bg-neutral-100 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-800"
-                    >
-                      {p.right}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {matchedIds.length === MATCH_PAIRS.length && (
+              <div className="flex flex-wrap items-center gap-2 border-t border-neutral-200 pt-4 dark:border-neutral-800">
+                {!examFinished ? (
+                  <button
+                    type="button"
+                    disabled={examScoringLoading}
+                    onClick={() => void finishExamAttempt()}
+                    className="rounded-lg bg-[#1B6B46] px-4 py-2 text-xs font-semibold text-white disabled:opacity-60"
+                  >
+                    {examScoringLoading ? 'Scoring...' : 'Submit Exam Paper'}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => startExamAttempt(activeExam)}
+                    className="rounded-lg bg-[#1B6B46] px-4 py-2 text-xs font-semibold text-white"
+                  >
+                    Retake Paper
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
-                    setMatchedIds([]);
-                    setMatchLeft(null);
-                    setMatchFeedback('');
+                    setExamStarted(false);
+                    localStorage.removeItem(STORAGE_ACTIVE_EXAM_KEY);
                   }}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#1B6B46] px-4 py-2 text-xs font-semibold text-white"
+                  className="rounded-lg border border-neutral-200 px-3 py-2 text-xs font-semibold dark:border-neutral-700"
                 >
-                  <Sparkles className="h-3.5 w-3.5" />
-                  All Matched — Play Again
+                  Back to Exams List
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {/* SECTION 6: BOOKS (Uploaded PDF Library & Reader) */}
+      {section === 'books' && <PdfBookLibrary programmeFilter={prefs.programmeTrack} />}
+
+      {/* SECTION 7: PROFILE & PROGRESS (Zero PII, Local Only) */}
+      {section === 'profile' && (
+        <div className="grid gap-6 lg:grid-cols-2">
+          <div className="space-y-4 rounded-xl border border-neutral-200 bg-white p-6 text-xs dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="flex items-center gap-2">
+              <GraduationCap className="h-4 w-4 text-[#1B6B46] dark:text-[#6CD19B]" />
+              <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                Local Study Preferences (Zero Account · Zero PII)
+              </h3>
+            </div>
+            <p className="text-neutral-500 dark:text-neutral-400">
+              Your board preference, bookmarks, streak, and exam drafts stay stored privately on your
+              device without requiring login or personal data.
+            </p>
+
+            <div>
+              <label className="mb-1 block font-semibold">Preferred KPK BISE Board</label>
+              <select
+                value={prefs.board}
+                onChange={(e) => setPrefs((p) => ({ ...p, board: e.target.value }))}
+                className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-800"
+              >
+                {KPK_BOARDS.map((b) => (
+                  <option key={b} value={b}>
+                    {b}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1 block font-semibold">Target Class</label>
+              <select
+                value={prefs.targetGrade}
+                onChange={(e) =>
+                  setPrefs((p) => ({
+                    ...p,
+                    targetGrade: Number(e.target.value) as 9 | 10 | 11 | 12,
+                  }))
+                }
+                className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-800"
+              >
+                <option value={9}>Grade 9 (SSC Part I)</option>
+                <option value={10}>Grade 10 (SSC Part II)</option>
+                <option value={11}>Grade 11 (HSSC Part I)</option>
+                <option value={12}>Grade 12 (HSSC Part II)</option>
+              </select>
+            </div>
+
+            <div>
+              <div className="mb-1 flex justify-between font-semibold">
+                <span>Daily Question Target</span>
+                <span className="font-mono-tabular">{dailyGoal.dailyQuestionTarget} Qs / day</span>
+              </div>
+              <input
+                type="range"
+                min={5}
+                max={30}
+                step={5}
+                value={dailyGoal.dailyQuestionTarget}
+                onChange={(e) =>
+                  setDailyGoal((prev) => ({
+                    ...prev,
+                    dailyQuestionTarget: Number(e.target.value),
+                  }))
+                }
+                className="w-full accent-[#1B6B46]"
+              />
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setOnboardingStep(0);
+                  setShowOnboardingBanner(true);
+                  setSection('home');
+                }}
+                className="rounded-lg border border-[#1B6B46] px-3 py-2 font-semibold text-[#1B6B46] dark:border-[#6CD19B] dark:text-[#6CD19B]"
+              >
+                Re-run Setup Wizard
+              </button>
+              {onClearAttempts && (
+                <button
+                  type="button"
+                  onClick={onClearAttempts}
+                  className="rounded-lg border border-[#B9382C]/40 px-3 py-2 font-semibold text-[#B9382C] dark:text-[#F28B82]"
+                >
+                  Reset Practice History
                 </button>
               )}
             </div>
-          )}
-        </div>
-
-        {/* Right Companion */}
-        <aside className="space-y-4">
-          <div className="rounded-xl border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-900">
-            <div className="flex items-center gap-2 text-sm font-bold text-neutral-900 dark:text-neutral-100">
-              <BookOpen className="h-4 w-4 text-[#1B6B46] dark:text-[#6CD19B]" />
-              Daily Retention Loop
-            </div>
-            <ul className="mt-3 space-y-2 text-xs leading-relaxed text-neutral-600 dark:text-neutral-300">
-              <li>1. 5-minute streak & forgiving load-shedding grace freezes keep habits intact.</li>
-              <li>2. Daily 10-MCQ separates KPK Board prep from MDCAT entrance accuracy.</li>
-              <li>3. Solved Past Papers across all 8 BISE boards with 6-step numericals.</li>
-              <li>4. 1-tap WhatsApp Study Cards drive organic peer downloads across KPK.</li>
-            </ul>
           </div>
 
-          {showAdPreview && (
-            <div className="rounded-xl border border-dashed border-neutral-300 bg-neutral-50 p-4 text-xs dark:border-neutral-700 dark:bg-neutral-900">
-              <div className="font-semibold text-neutral-800 dark:text-neutral-200">
-                Home / Browser AdMob Banner Slot
+          <div className="space-y-4 rounded-xl border border-neutral-200 bg-white p-6 text-xs dark:border-neutral-800 dark:bg-neutral-900">
+            <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+              Saved Chapters ({prefs.bookmarkedChapterIds.length}) &amp; Recent Activity
+            </h3>
+            {prefs.bookmarkedChapterIds.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {prefs.bookmarkedChapterIds.map((id) => {
+                  const found = chapters.find((c) => c.chapterId === id);
+                  if (!found) return null;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => handleSelectChapter(id, 'learn')}
+                      className="rounded-lg border border-neutral-200 px-3 py-1.5 font-semibold text-[#1B6B46] dark:border-neutral-700 dark:text-[#6CD19B]"
+                    >
+                      G{found.grade} · {found.title}
+                    </button>
+                  );
+                })}
               </div>
-              <p className="mt-1 text-neutral-500 dark:text-neutral-400">
-                320×50 adaptive banner placed quietly below the fold on Home & Chapter Lists—never inside active reading or timed mocks. Collapses automatically offline.
-              </p>
+            )}
+
+            <div className="divide-y divide-neutral-200 dark:divide-neutral-800">
+              {trackAttempts.length === 0 ? (
+                <p className="py-4 text-neutral-500">
+                  No practice attempts recorded in this track yet.
+                </p>
+              ) : (
+                trackAttempts.slice(0, 8).map((att) => (
+                  <div key={att.id} className="flex items-center justify-between py-2">
+                    <div>
+                      <div className="font-semibold text-neutral-900 dark:text-neutral-100">
+                        {att.subjectName} — {att.conceptTitle}
+                      </div>
+                      <div className="font-mono-tabular text-[11px] text-neutral-500">
+                        {new Date(att.timestamp).toLocaleString()}
+                      </div>
+                    </div>
+                    <span
+                      className={`font-semibold ${
+                        att.isCorrect
+                          ? 'text-[#1E7E4E] dark:text-[#6CD19B]'
+                          : 'text-[#B9382C] dark:text-[#F28B82]'
+                      }`}
+                    >
+                      {att.isCorrect ? 'Correct' : 'Review'}
+                    </span>
+                  </div>
+                ))
+              )}
             </div>
-          )}
-        </aside>
-      </div>
+          </div>
+        </div>
+      )}
+      </MotionScreenSwap>
 
       <WhatsAppShareModal card={shareCard} onClose={() => setShareCard(null)} />
     </div>

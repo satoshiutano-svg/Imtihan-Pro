@@ -8,6 +8,7 @@ import 'package:roshan_study/app/theme/app_typography.dart';
 import 'package:roshan_study/core/models/curriculum_models.dart';
 import 'package:roshan_study/core/utils/answer_matcher.dart';
 import 'package:roshan_study/core/widgets/academic_surface.dart';
+import 'package:roshan_study/core/widgets/math_text.dart';
 import 'package:roshan_study/data/repositories/content_repository.dart';
 import 'package:roshan_study/data/repositories/profile_repository.dart';
 import 'package:roshan_study/data/repositories/progress_repository.dart';
@@ -196,7 +197,7 @@ class _ExamRunnerScreenState extends ConsumerState<ExamRunnerScreen> {
                       ),
                     ),
                     const SizedBox(height: AppSpacing.xxs),
-                    Text(q.statement, style: theme.textTheme.titleMedium),
+                    MathText(q.statement, style: theme.textTheme.titleMedium),
                     const SizedBox(height: AppSpacing.sm),
                     if (q.options.isNotEmpty)
                       for (final opt in q.options)
@@ -230,7 +231,7 @@ class _ExamRunnerScreenState extends ConsumerState<ExamRunnerScreen> {
                                 ),
                                 const SizedBox(width: AppSpacing.sm),
                                 Expanded(
-                                  child: Text(
+                                  child: MathText(
                                     opt,
                                     style: theme.textTheme.bodyLarge,
                                   ),
@@ -269,12 +270,12 @@ class _ExamRunnerScreenState extends ConsumerState<ExamRunnerScreen> {
                       ),
                     if (_submitted) ...[
                       const SizedBox(height: AppSpacing.xs),
-                      Text(
+                      MathText(
                         'Answer Key: ${q.correctAnswer}',
                         style: theme.textTheme.labelLarge,
                       ),
                       const SizedBox(height: AppSpacing.xxs),
-                      Text(q.explanation, style: theme.textTheme.bodySmall),
+                      MathText(q.explanation, style: theme.textTheme.bodySmall),
                     ],
                   ],
                 );

@@ -2,17 +2,32 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:roshan_study/app/theme/app_tokens.dart';
+import 'package:roshan_study/core/models/curriculum_models.dart';
 import 'package:roshan_study/core/widgets/academic_surface.dart';
 import 'package:roshan_study/core/widgets/rtl_aware_text.dart';
 import 'package:roshan_study/data/kpk_subject_catalog.dart';
 import 'package:roshan_study/data/repositories/content_repository.dart';
 import 'package:roshan_study/data/repositories/profile_repository.dart';
 
-class LearnScreen extends ConsumerWidget {
+class LearnScreen extends ConsumerStatefulWidget {
   const LearnScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<LearnScreen> createState() => _LearnScreenState();
+}
+
+class _LearnScreenState extends ConsumerState<LearnScreen> {
+  final TextEditingController _searchController = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final profile = ref.watch(studentProfileProvider);
     final contentRepo = ref.watch(contentRepositoryProvider);
@@ -22,6 +37,16 @@ class LearnScreen extends ConsumerWidget {
       selectedElectiveIds: profile.selectedElectiveIds,
     );
     final bookmarks = contentRepo.listBookmarks();
+    final catalogIds = subjects.map((s) => s.id).toSet();
+
+    // Also surface any dynamically downloaded SSC/HSSC cloud packs for this grade
+    // whose subjectId isn't already in the profile's default list.
+    final dynamicExtraPacks = contentRepo
+        .getPacksForProgramme(ProgrammeId.sscHssc)
+        .where((p) => p.grade == profile.grade.number && !catalogIds.contains(p.subjectId))
+        .toList(growable: false);
+
+    final trimmedQuery = _query.trim().toLowerCase();
 
     return StudyPageContainer(
       children: [
@@ -38,7 +63,26 @@ class LearnScreen extends ConsumerWidget {
             label: const Text('Offline'),
           ),
         ),
-        if (bookmarks.isNotEmpty) ...[
+        const SizedBox(height: AppSpacing.md),
+        TextField(
+          controller: _searchController,
+          decoration: InputDecoration(
+            hintText: 'Search chapters, topics, or downloaded packs...',
+            prefixIcon: const Icon(Icons.search),
+            suffixIcon: trimmedQuery.isNotEmpty
+                ? IconButton(
+                    tooltip: 'Clear search',
+                    onPressed: () {
+                      _searchController.clear();
+                      setState(() => _query = '');
+                    },
+                    icon: const Icon(Icons.clear),
+                  )
+                : null,
+          ),
+          onChanged: (v) => setState(() => _query = v),
+        ),
+        if (bookmarks.isNotEmpty && trimmedQuery.isEmpty) ...[
           const StudyDivider(verticalPadding: AppSpacing.lg),
           const StudySectionHeader(title: 'Bookmarked Concepts'),
           const SizedBox(height: AppSpacing.xs),
@@ -76,87 +120,138 @@ class LearnScreen extends ConsumerWidget {
         ],
         const StudyDivider(verticalPadding: AppSpacing.lg),
         for (int sIdx = 0; sIdx < subjects.length; sIdx++) ...[
-          if (sIdx > 0) const SizedBox(height: AppSpacing.lg),
           Builder(
             builder: (context) {
               final subject = subjects[sIdx];
-              final chapters = contentRepo.getPacksForSubject(subject.id);
+              final chapters = contentRepo.getPacksForSubject(subject.id).where((ch) {
+                if (trimmedQuery.isEmpty) return true;
+                final hay =
+                    '${subject.name} ${ch.title} ${ch.concepts.map((c) => c.title).join(' ')}'
+                        .toLowerCase();
+                return hay.contains(trimmedQuery);
+              }).toList(growable: false);
 
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  StudySectionHeader(
-                    title: subject.name,
-                    subtitle: subject.code,
-                  ),
-                  if (subject.note != null) ...[
-                    const SizedBox(height: AppSpacing.xxs),
-                    RtlAwareText(
-                      subject.note!,
-                      style: theme.textTheme.bodySmall,
+              if (trimmedQuery.isNotEmpty && chapters.isEmpty) {
+                return const SizedBox.shrink();
+              }
+
+              return Padding(
+                padding: EdgeInsets.only(bottom: sIdx + 1 < subjects.length ? AppSpacing.lg : 0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    StudySectionHeader(
+                      title: subject.name,
+                      subtitle: subject.code,
                     ),
-                  ],
-                  const SizedBox(height: AppSpacing.xs),
-                  if (chapters.isEmpty)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                        vertical: AppSpacing.xs,
-                      ),
-                      child: Text(
-                        'Chapters queued for publishing in CMS (text-first, permission-verified).',
+                    if (subject.note != null) ...[
+                      const SizedBox(height: AppSpacing.xxs),
+                      RtlAwareText(
+                        subject.note!,
                         style: theme.textTheme.bodySmall,
                       ),
-                    )
-                  else
-                    AcademicSurface(
-                      padding: EdgeInsets.zero,
-                      child: Column(
-                        children: [
-                          for (int cIdx = 0; cIdx < chapters.length; cIdx++) ...[
-                            if (cIdx > 0) const Divider(height: 1),
-                            Builder(
-                              builder: (context) {
-                                final ch = chapters[cIdx];
-                                final downloaded =
-                                    contentRepo.isChapterDownloaded(ch.chapterId);
-                                return ListTile(
-                                  minTileHeight: 60,
-                                  title: Text(
-                                    'Ch ${ch.chapterNumber}: ${ch.title}',
-                                    style: theme.textTheme.titleSmall,
-                                  ),
-                                  subtitle: StudyMetadataLine(
-                                    parts: [
-                                      '${ch.concepts.length} concepts',
-                                      '${ch.questions.length} questions',
-                                      '${ch.estimatedSizeKb} KB',
-                                    ],
-                                  ),
-                                  trailing: Icon(
-                                    downloaded
-                                        ? Icons.offline_pin
-                                        : Icons.chevron_right,
-                                    color: downloaded
-                                        ? theme.colorScheme.primary
-                                        : theme.colorScheme.onSurfaceVariant,
-                                    size: AppIconSize.md,
-                                  ),
-                                  onTap: () => context.push(
-                                    '/learn/chapter/${ch.chapterId}',
-                                  ),
-                                );
-                              },
-                            ),
+                    ],
+                    const SizedBox(height: AppSpacing.xs),
+                    if (chapters.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          vertical: AppSpacing.xs,
+                        ),
+                        child: Text(
+                          'Chapters queued for publishing in CMS (text-first, permission-verified).',
+                          style: theme.textTheme.bodySmall,
+                        ),
+                      )
+                    else
+                      AcademicSurface(
+                        padding: EdgeInsets.zero,
+                        child: Column(
+                          children: [
+                            for (int cIdx = 0; cIdx < chapters.length; cIdx++) ...[
+                              if (cIdx > 0) const Divider(height: 1),
+                              _ChapterRow(
+                                chapter: chapters[cIdx],
+                                downloaded: contentRepo
+                                    .isChapterDownloaded(chapters[cIdx].chapterId),
+                                onTap: () => context.push(
+                                  '/learn/chapter/${chapters[cIdx].chapterId}',
+                                ),
+                              ),
+                            ],
                           ],
-                        ],
+                        ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               );
             },
           ),
         ],
+        if (dynamicExtraPacks.isNotEmpty) ...[
+          const StudyDivider(verticalPadding: AppSpacing.lg),
+          const StudySectionHeader(
+            title: 'Downloaded Cloud Packs',
+            subtitle: 'Additional subjects and chapters synced offline',
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          AcademicSurface(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                for (int i = 0; i < dynamicExtraPacks.length; i++) ...[
+                  if (i > 0) const Divider(height: 1),
+                  _ChapterRow(
+                    chapter: dynamicExtraPacks[i],
+                    downloaded: true,
+                    onTap: () => context.push(
+                      '/learn/chapter/${dynamicExtraPacks[i].chapterId}',
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
       ],
+    );
+  }
+}
+
+class _ChapterRow extends StatelessWidget {
+  const _ChapterRow({
+    required this.chapter,
+    required this.downloaded,
+    required this.onTap,
+  });
+
+  final ChapterPack chapter;
+  final bool downloaded;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ListTile(
+      minTileHeight: 60,
+      title: Text(
+        'Ch ${chapter.chapterNumber}: ${chapter.title}',
+        style: theme.textTheme.titleSmall,
+      ),
+      subtitle: StudyMetadataLine(
+        parts: [
+          '${chapter.concepts.length} concepts',
+          '${chapter.questions.length} questions',
+          '${chapter.estimatedSizeKb} KB',
+        ],
+      ),
+      trailing: Icon(
+        downloaded ? Icons.offline_pin : Icons.chevron_right,
+        color: downloaded
+            ? theme.colorScheme.primary
+            : theme.colorScheme.onSurfaceVariant,
+        size: AppIconSize.md,
+      ),
+      onTap: onTap,
     );
   }
 }

@@ -94,8 +94,20 @@ class _ChapterDetailScreenState extends ConsumerState<ChapterDetailScreen> {
           // Unboxed calm overview & primary chapter practice CTA
           StudySectionHeader(
             kicker: 'Grade ${pack.grade} • Chapter ${pack.chapterNumber}',
-            title: 'Learning Outcomes',
+            title: (pack.chapterIntro ?? '').trim().isNotEmpty
+                ? 'Chapter Overview & Outcomes'
+                : 'Learning Outcomes',
           ),
+          if ((pack.chapterIntro ?? '').trim().isNotEmpty) ...[
+            const SizedBox(height: AppSpacing.xs),
+            Text(pack.chapterIntro!, style: theme.textTheme.bodyMedium),
+          ],
+          if (pack.prerequisites.isNotEmpty) ...[
+            const SizedBox(height: AppSpacing.xs),
+            StudyMetadataLine(
+              parts: ['Prerequisites: ${pack.prerequisites.join(', ')}'],
+            ),
+          ],
           const SizedBox(height: AppSpacing.xs),
           for (final lo in pack.learningOutcomes)
             Padding(
